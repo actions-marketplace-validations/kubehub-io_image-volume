@@ -22,8 +22,8 @@ inputs:
       With publishTo: DockerDaemon this is the tag the converted image is
       loaded under in the local docker daemon (defaults to imageTag). With
       publishTo: RemotePush this is the remote target; when omitted it is
-      defaulted to ghcr.io/${{ github.repository }}:sanitized on GitHub-hosted
-      runners, or to docker.io/&lt;source repository&gt;:sanitized on-prem.
+      defaulted to ghcr.io/<owner>/<repo>:sanitized on GitHub-hosted runners,
+      or to docker.io/<source repository>:sanitized on-prem.
     required: false
     default: ''
   publishTo:

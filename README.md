@@ -194,6 +194,11 @@ export INPUT_REGISTRY_PASSWORD="token"
 When pushing to a public registry repository, no credentials are needed. For
 private repositories, provide credentials with push access.
 
+> **Disclaimer:** The converter is developed and tested on **Linux**. Binaries
+> are also built for **Windows** and **macOS**, but those platforms are **not
+> tested** — `RemotePush` mode should work, while the `DockerDaemon` mode is
+> untested there and may not behave as expected.
+
 ## Local development
 
 ```bash
