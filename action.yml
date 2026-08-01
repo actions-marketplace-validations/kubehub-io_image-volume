@@ -35,7 +35,7 @@ inputs:
 runs:
   using: 'composite'
   steps:
-    - name: Install oci-sanitize binary
+    - name: Install image-volume-converter binary
       shell: bash
       env:
         GITHUB_TOKEN: ${{ github.token }}
@@ -52,7 +52,7 @@ runs:
           *) echo "::error::unsupported runner architecture $(uname -m)"; exit 1 ;;
         esac
 
-        BIN="$RUNNER_TEMP/oci-sanitize"
+        BIN="$RUNNER_TEMP/image-volume-converter"
         mkdir -p "$BIN"
 
         ASSET_URL="$(curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" \
@@ -63,9 +63,9 @@ runs:
 
         [[ -n "$ASSET_URL" ]] || { echo "::error::no linux/$GOARCH binary found in the latest release of $REPO"; exit 1; }
 
-        curl -fSL "$ASSET_URL" -o "$BIN/oci-sanitize"
-        chmod +x "$BIN/oci-sanitize"
-        echo "oci-sanitize installed at $BIN/oci-sanitize" >> "$GITHUB_STEP_SUMMARY"
+        curl -fSL "$ASSET_URL" -o "$BIN/image-volume-converter"
+        chmod +x "$BIN/image-volume-converter"
+        echo "image-volume-converter installed at $BIN/image-volume-converter" >> "$GITHUB_STEP_SUMMARY"
 
     - name: Sanitize and publish image
       shell: bash
@@ -76,4 +76,4 @@ runs:
         INPUT_REGISTRY_PASSWORD: ${{ inputs.registryPassword }}
         INPUT_GITHUB_ACTOR: ${{ github.actor }}
         INPUT_GITHUB_TOKEN: ${{ github.token }}
-      run: "$RUNNER_TEMP/oci-sanitize/oci-sanitize"
+      run: "$RUNNER_TEMP/image-volume-converter/image-volume-converter"

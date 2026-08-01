@@ -1,13 +1,14 @@
-# Releases the oci-sanitize binary as a GitHub Release asset so the composite
-# action can download a prebuilt binary instead of compiling on every run.
+# Releases the image-volume-converter binary as a GitHub Release asset so the
+# composite action can download a prebuilt binary instead of compiling on every
+# run.
 version: 2
 
-project_name: oci-sanitize
+project_name: image-volume-converter
 
 builds:
-  - id: oci-sanitize
-    main: ./cmd/oci-sanitize
-    binary: oci-sanitize
+  - id: image-volume-converter
+    main: ./cmd/image-volume-converter
+    binary: image-volume-converter
     env:
       - CGO_ENABLED=0
     flags:

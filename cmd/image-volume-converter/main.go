@@ -1,9 +1,9 @@
-// Command oci-sanitize implements the "OCI image arch/os sanitizer" GitHub
-// Action. It loads an image (preferring the local docker daemon, otherwise
-// pulling it for the platform of the runner), exports it as an OCI archive and
-// unpacks it into an OCI layout directory, rewrites the image config so that
-// `architecture` and `os` are `unknown`, and finally publishes the resulting
-// image to a ghcr.io repository.
+// Command image-volume-converter implements the "OCI image arch/os sanitizer"
+// GitHub Action. It loads an image (preferring the local docker daemon,
+// otherwise pulling it for the platform of the runner), exports it as an OCI
+// archive and unpacks it into an OCI layout directory, rewrites the image
+// config so that `architecture` and `os` are `unknown`, and finally publishes
+// the resulting image to a ghcr.io repository.
 package main
 
 import (
@@ -29,7 +29,7 @@ import (
 
 func main() {
 	if err := run(); err != nil {
-		fmt.Fprintln(os.Stderr, "oci-sanitize:", err)
+		fmt.Fprintln(os.Stderr, "image-volume-converter:", err)
 		os.Exit(1)
 	}
 }
@@ -60,7 +60,7 @@ func run() error {
 		password = token
 	}
 	if password == "" {
-		fmt.Fprintln(os.Stderr, "oci-sanitize: warning: no registry credentials provided; publishing to ghcr.io will fail unless the repository is public")
+		fmt.Fprintln(os.Stderr, "image-volume-converter: warning: no registry credentials provided; publishing to ghcr.io will fail unless the repository is public")
 	}
 
 	srcRef, err := name.ParseReference(imageTag)
@@ -88,13 +88,13 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("oci-sanitize: resolved %s from %s\n", srcRef, source)
+	fmt.Printf("image-volume-converter: resolved %s from %s\n", srcRef, source)
 
 	// 1b) Export the image as an OCI archive and unpack it into an OCI layout
 	//     directory. This mirrors:
 	//       podman save --format oci-archive -o /tmp/docs.tar <image>
 	//       tar -xf /tmp/docs.tar -C /tmp/docs-oci
-	workDir := filepath.Join(os.TempDir(), "oci-sanitize")
+	workDir := filepath.Join(os.TempDir(), "image-volume-converter")
 	archivePath := filepath.Join(workDir, "docs.tar")
 	ociDir := filepath.Join(workDir, "docs-oci")
 	if err := exportOCILayout(workDir, archivePath, ociDir, img); err != nil {
@@ -131,12 +131,12 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("reading config %s: %w", configName, err)
 	}
-	fmt.Printf("oci-sanitize: index.json -> manifest %s -> config %s (architecture=%q os=%q)\n",
+	fmt.Printf("image-volume-converter: index.json -> manifest %s -> config %s (architecture=%q os=%q)\n",
 		manifestDesc.Digest, configName, cfg.Architecture, cfg.OS)
 
 	// 3) Rewrite the config: architecture and os both become "unknown", then
 	//    repack into a fresh OCI layout (new config blob, manifest and index).
-	fmt.Printf("oci-sanitize: setting architecture and os to \"unknown\"\n")
+	fmt.Printf("image-volume-converter: setting architecture and os to \"unknown\"\n")
 	cfg.Architecture = "unknown"
 	cfg.OS = "unknown"
 	sanitized, err := mutate.ConfigFile(manifestImg, cfg)
@@ -144,7 +144,7 @@ func run() error {
 		return fmt.Errorf("updating config: %w", err)
 	}
 
-	ociNewDir := filepath.Join(workDir, "docs-oci-sanitized")
+	ociNewDir := filepath.Join(workDir, "docs-image-volume-converterd")
 	if err := writeLayout(ociNewDir, sanitized); err != nil {
 		return err
 	}
@@ -163,18 +163,18 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("oci-sanitize: sanitized layout written to %s (config %s, architecture=%q os=%q)\n",
+	fmt.Printf("image-volume-converter: sanitized layout written to %s (config %s, architecture=%q os=%q)\n",
 		ociNewDir, newConfigName, outCfg.Architecture, outCfg.OS)
 
 	// 4) Publish the packed layout to the target registry (ghcr.io).
-	fmt.Printf("oci-sanitize: publishing %s -> %s\n", srcRef, dstRef)
+	fmt.Printf("image-volume-converter: publishing %s -> %s\n", srcRef, dstRef)
 	if err := remote.Write(dstRef, outImg,
 		remote.WithAuth(auth),
 		remote.WithContext(ctx),
 	); err != nil {
 		return fmt.Errorf("publishing image: %w", err)
 	}
-	fmt.Printf("oci-sanitize: published %s\n", dstRef.Name())
+	fmt.Printf("image-volume-converter: published %s\n", dstRef.Name())
 	return nil
 }
 
@@ -184,7 +184,7 @@ func loadImage(ctx context.Context, ref name.Reference, platform v1.Platform, au
 	if img, err := daemon.Image(ref); err == nil {
 		return img, "local docker daemon", nil
 	}
-	fmt.Printf("oci-sanitize: image not found in local docker daemon, pulling %s (platform %s/%s)\n",
+	fmt.Printf("image-volume-converter: image not found in local docker daemon, pulling %s (platform %s/%s)\n",
 		ref, platform.OS, platform.Architecture)
 	img, err := remote.Image(ref,
 		remote.WithPlatform(platform),
@@ -217,7 +217,7 @@ func exportOCILayout(workDir, archivePath, ociDir string, img v1.Image) error {
 	if err := unpack(archivePath, ociDir); err != nil {
 		return err
 	}
-	fmt.Printf("oci-sanitize: exported OCI archive to %s and unpacked it to %s\n", archivePath, ociDir)
+	fmt.Printf("image-volume-converter: exported OCI archive to %s and unpacked it to %s\n", archivePath, ociDir)
 	return nil
 }
 

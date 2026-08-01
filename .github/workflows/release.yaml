@@ -1,4 +1,4 @@
-name: Release oci-sanitize binary
+name: Release image-volume-converter binary
 
 on:
   push:

@@ -1,4 +1,4 @@
-module github.com/kubehub-io/content-image
+module github.com/kubehub-io/image-volume
 
 go 1.25.0
 
