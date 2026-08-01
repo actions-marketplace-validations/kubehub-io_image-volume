@@ -51,17 +51,19 @@ jobs:
           builder: ${{ steps.buildx.outputs.name }}
           context: .
           file: ./test/Dockerfile
-          push: ${{ github.event_name != 'pull_request' }}
+          push: false
           load: true
           platforms: linux/amd64
           tags: |
             ghcr.io/${{ github.repository }}-test:${{ env.IMAGE_TAG }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          provenance: false
+          sbom: false
 
       - name: Sanitize arch/os and publish
         if: github.event_name != 'pull_request'
         uses: ./
         with:
           imageTag: ghcr.io/${{ github.repository }}-test:${{ env.IMAGE_TAG }}
-          publishImageTag: ghcr.io/${{ github.repository }}-test:sanitized-${{ env.IMAGE_TAG }}
+          publishImageTag: ghcr.io/${{ github.repository }}-test:${{ env.IMAGE_TAG }}
