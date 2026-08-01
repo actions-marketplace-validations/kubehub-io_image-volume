@@ -75,5 +75,5 @@ runs:
         INPUT_REGISTRY_USERNAME: ${{ inputs.registryUsername }}
         INPUT_REGISTRY_PASSWORD: ${{ inputs.registryPassword }}
         INPUT_GITHUB_ACTOR: ${{ github.actor }}
-        INPUT_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        INPUT_GITHUB_TOKEN: ${{ github.token }}
       run: "$RUNNER_TEMP/oci-sanitize/oci-sanitize"
