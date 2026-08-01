@@ -1,9 +1,7 @@
-name: 'OCI Image Arch/OS Sanitizer'
+name: 'Image Volume Converter for Kubernetes'
 description: >-
-  Help you build a container image volume for the Kubernetes use case:
-  - solves the architecture/os mismatch that blocks image volumes on nodes.
-  - solves multi-arch problems for data volumes without a per-platform build
-  matrix.
+  Build a Kubernetes image volume: rewrite os/arch to unknown, solving arch
+  mismatch and multi-arch problems for data volumes.
 branding:
   icon: 'package'
   color: 'blue'
