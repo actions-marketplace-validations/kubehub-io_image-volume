@@ -3,7 +3,7 @@ description: >-
   Build a Kubernetes image volume: rewrite os/arch to unknown, solving arch
   mismatch and multi-arch problems for data volumes.
 branding:
-  icon: 'package'
+  icon: 'anchor'
   color: 'blue'
 
 inputs:
@@ -16,10 +16,10 @@ inputs:
     required: true
   outputImageTag:
     description: >-
-      Destination image reference, e.g. ghcr.io/kubehub-io/docs:sanitized. Used
-      with publishTo: RemotePush. When omitted it defaults to
-      ghcr.io/<owner>/<repo>:sanitized on GitHub-hosted runners, or to
-      docker.io/<source repository>:sanitized on-prem.
+      Destination image reference, e.g. ghcr.io/kubehub-io/docs:main-noarch.
+      Used with publishTo: RemotePush. When omitted it defaults to the input
+      imageTag with -noarch appended to its tag, so the converted image never
+      overwrites the source.
     required: false
     default: ''
   publishTo:
@@ -75,13 +75,12 @@ runs:
         chmod +x "$BIN/image-volume-converter"
         echo "image-volume-converter installed at $BIN/image-volume-converter" >> "$GITHUB_STEP_SUMMARY"
 
-    - name: Sanitize and publish image
+    - name: Rewrite arch/os to no-arch and publish image
       shell: bash
       env:
         INPUT_IMAGE_TAG: ${{ inputs.imageTag }}
         INPUT_OUTPUT_IMAGE_TAG: ${{ inputs.outputImageTag }}
         INPUT_PUBLISH_TO: ${{ inputs.publishTo }}
-        INPUT_GITHUB_REPOSITORY: ${{ github.repository }}
         INPUT_REGISTRY_USERNAME: ${{ inputs.registryUsername }}
         INPUT_REGISTRY_PASSWORD: ${{ inputs.registryPassword }}
         INPUT_GITHUB_ACTOR: ${{ github.actor }}

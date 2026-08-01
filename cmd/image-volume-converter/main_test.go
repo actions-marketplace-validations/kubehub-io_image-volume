@@ -41,10 +41,10 @@ func newTestImage(t *testing.T) v1.Image {
 	return img
 }
 
-// TestSanitizeLayout exercises the export -> index/manifest/config resolution
+// TestNoArchLayout exercises the export -> index/manifest/config resolution
 // -> config rewrite -> repack flow against a locally synthesized image, so it
 // can run without a docker daemon or registry.
-func TestSanitizeLayout(t *testing.T) {
+func TestNoArchLayout(t *testing.T) {
 	workDir := t.TempDir()
 	archivePath := filepath.Join(workDir, "docs.tar")
 	ociDir := filepath.Join(workDir, "docs-oci")
@@ -100,12 +100,12 @@ func TestSanitizeLayout(t *testing.T) {
 	// Rewrite the config and repack into a fresh layout.
 	cfg.Architecture = "unknown"
 	cfg.OS = "unknown"
-	sanitized, err := mutate.ConfigFile(img, &cfg)
+	noArch, err := mutate.ConfigFile(img, &cfg)
 	if err != nil {
 		t.Fatalf("mutate.ConfigFile: %v", err)
 	}
-	ociNewDir := filepath.Join(workDir, "docs-oci-sanitized")
-	if err := writeLayout(ociNewDir, sanitized); err != nil {
+	ociNewDir := filepath.Join(workDir, "docs-oci-no-arch")
+	if err := writeLayout(ociNewDir, noArch); err != nil {
 		t.Fatalf("writeLayout: %v", err)
 	}
 
@@ -118,7 +118,7 @@ func TestSanitizeLayout(t *testing.T) {
 		t.Fatalf("outImg.ConfigFile: %v", err)
 	}
 	if outCfg.Architecture != "unknown" || outCfg.OS != "unknown" {
-		t.Fatalf("config not sanitized: arch=%q os=%q", outCfg.Architecture, outCfg.OS)
+		t.Fatalf("os/arch not set to unknown: arch=%q os=%q", outCfg.Architecture, outCfg.OS)
 	}
 	outCfgName, err := outImg.ConfigName()
 	if err != nil {
@@ -128,12 +128,12 @@ func TestSanitizeLayout(t *testing.T) {
 		t.Fatalf("config digest should have changed after rewrite")
 	}
 
-	// The sanitized layout on disk must reference the new manifest/config and
+	// The no-arch layout on disk must reference the new manifest/config and
 	// keep the original layer blobs untouched.
 	outIndexPath := filepath.Join(ociNewDir, "index.json")
 	var outIdx v1.IndexManifest
 	if err := readJSON(outIndexPath, &outIdx); err != nil {
-		t.Fatalf("reading sanitized index.json: %v", err)
+		t.Fatalf("reading no-arch index.json: %v", err)
 	}
 	outManifestDesc := outIdx.Manifests[0]
 	if outManifestDesc.Digest == manifestDesc.Digest {
@@ -141,7 +141,7 @@ func TestSanitizeLayout(t *testing.T) {
 	}
 	var outManifest v1.Manifest
 	if err := readJSON(blobPath(ociNewDir, outManifestDesc.Digest), &outManifest); err != nil {
-		t.Fatalf("reading sanitized manifest: %v", err)
+		t.Fatalf("reading no-arch manifest: %v", err)
 	}
 	if outManifest.Config.Digest != outCfgName {
 		t.Fatalf("manifest references config %s, expected %s", outManifest.Config.Digest, outCfgName)
@@ -154,12 +154,12 @@ func TestSanitizeLayout(t *testing.T) {
 			t.Fatalf("layer %d digest changed: got %s, want %s", i, l.Digest, manifest.Layers[i].Digest)
 		}
 		if _, err := os.Stat(blobPath(ociNewDir, l.Digest)); err != nil {
-			t.Fatalf("layer blob %s missing from sanitized layout: %v", l.Digest, err)
+			t.Fatalf("layer blob %s missing from no-arch layout: %v", l.Digest, err)
 		}
 	}
 }
 
-// TestPublishToRegistry runs the same sanitized image through remote.Write
+// TestPublishToRegistry runs the same no-arch image through remote.Write
 // against an in-memory OCI registry and pulls it back, verifying the publish
 // path (step 4) end to end.
 func TestPublishToRegistry(t *testing.T) {
@@ -173,14 +173,14 @@ func TestPublishToRegistry(t *testing.T) {
 	}
 	cfg.Architecture = "unknown"
 	cfg.OS = "unknown"
-	sanitized, err := mutate.ConfigFile(img, cfg)
+	noArch, err := mutate.ConfigFile(img, cfg)
 	if err != nil {
 		t.Fatalf("mutate.ConfigFile: %v", err)
 	}
 
 	// Repack through an OCI layout, exactly like the action does.
 	ociDir := filepath.Join(t.TempDir(), "oci")
-	if err := writeLayout(ociDir, sanitized); err != nil {
+	if err := writeLayout(ociDir, noArch); err != nil {
 		t.Fatalf("writeLayout: %v", err)
 	}
 	outImg, err := imageFromLayout(ociDir)
@@ -189,7 +189,7 @@ func TestPublishToRegistry(t *testing.T) {
 	}
 
 	host := strings.TrimPrefix(srv.URL, "http://")
-	ref, err := name.ParseReference(fmt.Sprintf("%s/sanitize/test:latest", host))
+	ref, err := name.ParseReference(fmt.Sprintf("%s/no-arch/test:latest", host))
 	if err != nil {
 		t.Fatalf("ParseReference: %v", err)
 	}
@@ -206,7 +206,7 @@ func TestPublishToRegistry(t *testing.T) {
 		t.Fatalf("read-back ConfigFile: %v", err)
 	}
 	if gotCfg.Architecture != "unknown" || gotCfg.OS != "unknown" {
-		t.Fatalf("read-back config not sanitized: arch=%q os=%q", gotCfg.Architecture, gotCfg.OS)
+		t.Fatalf("read-back os/arch not set to unknown: arch=%q os=%q", gotCfg.Architecture, gotCfg.OS)
 	}
 }
 
@@ -216,7 +216,6 @@ func TestResolveDestination(t *testing.T) {
 		imageTag       string
 		outputImageTag string
 		publishTo      string
-		onPrem         bool
 		wantMode       string
 		wantRef        string
 		wantPath       string
@@ -225,62 +224,68 @@ func TestResolveDestination(t *testing.T) {
 		{
 			name:           "remote push default mode",
 			imageTag:       "ghcr.io/kubehub-io/docs:main",
-			outputImageTag: "ghcr.io/kubehub-io/docs:sanitized",
+			outputImageTag: "ghcr.io/kubehub-io/docs:no-arch",
 			publishTo:      "",
 			wantMode:       "RemotePush",
-			wantRef:        "ghcr.io/kubehub-io/docs:sanitized",
+			wantRef:        "ghcr.io/kubehub-io/docs:no-arch",
 		},
 		{
 			name:           "remote push explicit",
 			imageTag:       "ghcr.io/kubehub-io/docs:main",
-			outputImageTag: "ghcr.io/kubehub-io/docs:sanitized",
+			outputImageTag: "ghcr.io/kubehub-io/docs:no-arch",
 			publishTo:      "RemotePush",
 			wantMode:       "RemotePush",
-			wantRef:        "ghcr.io/kubehub-io/docs:sanitized",
+			wantRef:        "ghcr.io/kubehub-io/docs:no-arch",
 		},
 		{
-			name:      "remote push defaulted to ghcr.io on github runner",
+			name:      "remote push defaulted to input tag plus -noarch",
 			imageTag:  "ghcr.io/kubehub-io/docs:main",
 			publishTo: "RemotePush",
 			wantMode:  "RemotePush",
-			wantRef:   "ghcr.io/kubehub-io/docs:sanitized",
+			wantRef:   "ghcr.io/kubehub-io/docs:main-noarch",
 		},
 		{
-			name:      "remote push defaulted to docker.io on-prem",
+			name:      "remote push defaulted on docker.io input",
 			imageTag:  "docker.io/kubehub-io/docs:main",
 			publishTo: "RemotePush",
-			onPrem:    true,
 			wantMode:  "RemotePush",
-			wantRef:   "index.docker.io/kubehub-io/docs:sanitized",
+			wantRef:   "index.docker.io/kubehub-io/docs:main-noarch",
+		},
+		{
+			name:      "remote push defaulted for input without a tag",
+			imageTag:  "ghcr.io/kubehub-io/docs",
+			publishTo: "RemotePush",
+			wantMode:  "RemotePush",
+			wantRef:   "ghcr.io/kubehub-io/docs:latest-noarch",
 		},
 		{
 			name:           "remote push docker.io explicit",
 			imageTag:       "docker.io/kubehub-io/docs:main",
-			outputImageTag: "docker.io/kubehub-io/docs:sanitized",
+			outputImageTag: "docker.io/kubehub-io/docs:no-arch",
 			publishTo:      "RemotePush",
 			wantMode:       "RemotePush",
-			wantRef:        "index.docker.io/kubehub-io/docs:sanitized",
+			wantRef:        "index.docker.io/kubehub-io/docs:no-arch",
 		},
 		{
 			name:      "oci archive absolute path",
 			imageTag:  "ghcr.io/kubehub-io/docs:main",
-			publishTo: "OCIArchive:/tmp/docs-sanitized.tar",
+			publishTo: "OCIArchive:/tmp/docs-no-arch.tar",
 			wantMode:  "OCIArchive",
-			wantPath:  "/tmp/docs-sanitized.tar",
+			wantPath:  "/tmp/docs-no-arch.tar",
 		},
 		{
 			name:      "oci archive relative path",
 			imageTag:  "ghcr.io/kubehub-io/docs:main",
-			publishTo: "OCIArchive:docs-sanitized.tar",
+			publishTo: "OCIArchive:docs-no-arch.tar",
 			wantMode:  "OCIArchive",
-			wantPath:  "docs-sanitized.tar",
+			wantPath:  "docs-no-arch.tar",
 		},
 		{
 			name:      "oci archive path trimmed",
 			imageTag:  "ghcr.io/kubehub-io/docs:main",
-			publishTo: " OCIArchive: /tmp/docs-sanitized.tar ",
+			publishTo: " OCIArchive: /tmp/docs-no-arch.tar ",
 			wantMode:  "OCIArchive",
-			wantPath:  "/tmp/docs-sanitized.tar",
+			wantPath:  "/tmp/docs-no-arch.tar",
 		},
 		{
 			name:      "oci archive missing path",
@@ -304,12 +309,6 @@ func TestResolveDestination(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if tc.onPrem {
-				t.Setenv("INPUT_GITHUB_REPOSITORY", "")
-				t.Setenv("GITHUB_REPOSITORY", "")
-			} else {
-				t.Setenv("INPUT_GITHUB_REPOSITORY", "kubehub-io/docs")
-			}
 			dst, err := resolveDestination(tc.imageTag, tc.outputImageTag, tc.publishTo)
 			if tc.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
@@ -337,9 +336,9 @@ func TestResolveDestination(t *testing.T) {
 	}
 }
 
-// TestExportOCIArchive exports a sanitized OCI layout as a tar archive and
+// TestExportOCIArchive exports a no-arch OCI layout as a tar archive and
 // reads it back to confirm the archive is a valid OCI layout carrying the
-// sanitized config.
+// no-arch config.
 func TestExportOCIArchive(t *testing.T) {
 	img := newTestImage(t)
 	cfg, err := img.ConfigFile()
@@ -348,14 +347,14 @@ func TestExportOCIArchive(t *testing.T) {
 	}
 	cfg.Architecture = "unknown"
 	cfg.OS = "unknown"
-	sanitized, err := mutate.ConfigFile(img, cfg)
+	noArch, err := mutate.ConfigFile(img, cfg)
 	if err != nil {
 		t.Fatalf("mutate.ConfigFile: %v", err)
 	}
 
 	dir := t.TempDir()
 	ociDir := filepath.Join(dir, "oci")
-	if err := writeLayout(ociDir, sanitized); err != nil {
+	if err := writeLayout(ociDir, noArch); err != nil {
 		t.Fatalf("writeLayout: %v", err)
 	}
 	archive := filepath.Join(dir, "nested", "out.tar")
@@ -379,37 +378,39 @@ func TestExportOCIArchive(t *testing.T) {
 		t.Fatalf("ConfigFile: %v", err)
 	}
 	if gotCfg.Architecture != "unknown" || gotCfg.OS != "unknown" {
-		t.Fatalf("config not sanitized in archive: arch=%q os=%q", gotCfg.Architecture, gotCfg.OS)
+		t.Fatalf("os/arch not set to unknown in archive: arch=%q os=%q", gotCfg.Architecture, gotCfg.OS)
 	}
 }
 
 func TestDefaultRemoteTarget(t *testing.T) {
-	t.Run("github runner uses ghcr.io", func(t *testing.T) {
-		t.Setenv("INPUT_GITHUB_REPOSITORY", "kubehub-io/image-volume")
-		t.Setenv("GITHUB_REPOSITORY", "")
-		if got := defaultRemoteTarget("ghcr.io/kubehub-io/docs:main"); got != "ghcr.io/kubehub-io/image-volume:sanitized" {
-			t.Fatalf("defaultRemoteTarget() = %q, want ghcr.io/kubehub-io/image-volume:sanitized", got)
+	t.Run("appends -noarch to the input tag", func(t *testing.T) {
+		if got := defaultRemoteTarget("ghcr.io/kubehub-io/docs:main"); got != "ghcr.io/kubehub-io/docs:main-noarch" {
+			t.Fatalf("defaultRemoteTarget() = %q, want ghcr.io/kubehub-io/docs:main-noarch", got)
 		}
 	})
-	t.Run("github runner falls back to GITHUB_REPOSITORY env", func(t *testing.T) {
-		t.Setenv("INPUT_GITHUB_REPOSITORY", "")
-		t.Setenv("GITHUB_REPOSITORY", "kubehub-io/image-volume")
-		if got := defaultRemoteTarget("ghcr.io/kubehub-io/docs:main"); got != "ghcr.io/kubehub-io/image-volume:sanitized" {
-			t.Fatalf("defaultRemoteTarget() = %q, want ghcr.io/kubehub-io/image-volume:sanitized", got)
+	t.Run("keeps docker.io registry spelling", func(t *testing.T) {
+		if got := defaultRemoteTarget("docker.io/kubehub-io/docs:main"); got != "docker.io/kubehub-io/docs:main-noarch" {
+			t.Fatalf("defaultRemoteTarget() = %q, want docker.io/kubehub-io/docs:main-noarch", got)
 		}
 	})
-	t.Run("on-prem uses docker.io derived from source", func(t *testing.T) {
-		t.Setenv("INPUT_GITHUB_REPOSITORY", "")
-		t.Setenv("GITHUB_REPOSITORY", "")
-		if got := defaultRemoteTarget("docker.io/kubehub-io/docs:main"); got != "docker.io/kubehub-io/docs:sanitized" {
-			t.Fatalf("defaultRemoteTarget() = %q, want docker.io/kubehub-io/docs:sanitized", got)
+	t.Run("bare source keeps its spelling", func(t *testing.T) {
+		if got := defaultRemoteTarget("kubehub-io/docs:main"); got != "kubehub-io/docs:main-noarch" {
+			t.Fatalf("defaultRemoteTarget() = %q, want kubehub-io/docs:main-noarch", got)
 		}
 	})
-	t.Run("on-prem bare source still targets docker.io", func(t *testing.T) {
-		t.Setenv("INPUT_GITHUB_REPOSITORY", "")
-		t.Setenv("GITHUB_REPOSITORY", "")
-		if got := defaultRemoteTarget("kubehub-io/docs:main"); got != "docker.io/kubehub-io/docs:sanitized" {
-			t.Fatalf("defaultRemoteTarget() = %q, want docker.io/kubehub-io/docs:sanitized", got)
+	t.Run("input without a tag defaults to latest-noarch", func(t *testing.T) {
+		if got := defaultRemoteTarget("ghcr.io/kubehub-io/docs"); got != "ghcr.io/kubehub-io/docs:latest-noarch" {
+			t.Fatalf("defaultRemoteTarget() = %q, want ghcr.io/kubehub-io/docs:latest-noarch", got)
+		}
+	})
+	t.Run("digest reference falls back to repository no-arch tag", func(t *testing.T) {
+		if got := defaultRemoteTarget("ghcr.io/kubehub-io/docs@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"); got != "ghcr.io/kubehub-io/docs:no-arch" {
+			t.Fatalf("defaultRemoteTarget() = %q, want ghcr.io/kubehub-io/docs:no-arch", got)
+		}
+	})
+	t.Run("invalid reference falls back to no-arch tag", func(t *testing.T) {
+		if got := defaultRemoteTarget("not a ref"); got != "not a ref:no-arch" {
+			t.Fatalf("defaultRemoteTarget() = %q, want %q", got, "not a ref:no-arch")
 		}
 	})
 }

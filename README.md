@@ -65,7 +65,7 @@ Add a job to your workflow after the image has been built. The action needs no
 extra permissions beyond what you already use to push images to ghcr.io.
 
 ```yaml
-name: Publish sanitized image for Kubernetes image volumes
+name: Publish no-arch image for Kubernetes image volumes
 
 on:
   push:
@@ -90,11 +90,11 @@ jobs:
           load: true
           tags: ghcr.io/${{ github.repository }}-test:main-latest
 
-      - name: Sanitize and publish image
+      - name: Remove os/arch from image
         uses: kubehub-io/image-volume@v1
         with:
           imageTag: ghcr.io/${{ github.repository }}-test:main-latest
-          outputImageTag: ghcr.io/${{ github.repository }}-test:sanitized
+          outputImageTag: ghcr.io/${{ github.repository }}-test:no-arch
 ```
 
 ### publishTo
@@ -109,11 +109,11 @@ jobs:
 To push the converted image to ghcr.io, use the default `RemotePush`:
 
 ```yaml
-      - name: Sanitize and push to ghcr.io
+      - name: Remove os/arch from image and push to ghcr.io
         uses: kubehub-io/image-volume@v1
         with:
           imageTag: ghcr.io/${{ github.repository }}-test:main-latest
-          outputImageTag: ghcr.io/${{ github.repository }}-test:sanitized
+          outputImageTag: ghcr.io/${{ github.repository }}-test:no-arch
 ```
 
 To get an OCI archive on the runner instead of pushing anywhere — e.g. to
@@ -122,15 +122,15 @@ inspect it with `skopeo`/`regctl`, or to ship it to an on-prem cluster — use
 `outputImageTag` is ignored:
 
 ```yaml
-      - name: Sanitize and export OCI archive
+      - name: Remove os/arch from image and export OCI archive
         uses: kubehub-io/image-volume@v1
         with:
           imageTag: ghcr.io/${{ github.repository }}-test:main-latest
-          publishTo: OCIArchive:${{ runner.temp }}/sanitized.tar
+          publishTo: OCIArchive:${{ runner.temp }}/no-arch.tar
 
       - name: Inspect the converted image
         run: |
-          skopeo inspect "oci-archive:${{ runner.temp }}/sanitized.tar" \
+          skopeo inspect "oci-archive:${{ runner.temp }}/no-arch.tar" \
             --format 'architecture={{.Architecture}} os={{.Os}}'
 ```
 
@@ -139,14 +139,14 @@ inspect it with `skopeo`/`regctl`, or to ship it to an on-prem cluster — use
 > declares `os`/`arch` as `unknown`. It therefore cannot be `docker load`-ed;
 > use an OCI archive (inspectable with `skopeo`/`regctl`, importable with
 > `ctr images import`) or push it to a registry. containerd and the Kubernetes
-> kubelet accept the sanitized image.
+> kubelet accept the no-arch image.
 
 ### Inputs
 
 | Input               | Required | Default          | Description                                                                                                                                                                                     |
 | ------------------- | :------: | ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `imageTag`          |   yes    | —                | The source image to convert, e.g. `ghcr.io/kubehub-io/docs:main-20260731-2`. The local docker daemon is checked first; if the image is not there it is pulled from its registry. Multi-arch images are resolved to the platform of the current runner. |
-| `outputImageTag`    |    no    | auto             | The remote destination image reference, e.g. `ghcr.io/kubehub-io/docs:sanitized`. Used with `publishTo: RemotePush`. See [defaulting](#outputimagetag-defaulting). |
+| `outputImageTag`    |    no    | auto             | The remote destination image reference, e.g. `ghcr.io/kubehub-io/docs:main-noarch`. Used with `publishTo: RemotePush`. See [defaulting](#outputimagetag-defaulting). |
 | `publishTo`         |    no    | `RemotePush`     | Where to put the converted image: `RemotePush` (default) or `OCIArchive:<path>`. See [publishTo](#publishto).                                                                                  |
 | `registryUsername`  |    no    | `github.actor`   | Username used to authenticate against the remote registry. Ignored when `publishTo: OCIArchive`.                                                                                                |
 | `registryPassword`  |    no    | `github.token`   | Password/token used to authenticate against the remote registry. Ignored when `publishTo: OCIArchive`.                                                                                          |
@@ -161,14 +161,14 @@ platform) per-architecture images.
 `outputImageTag` is optional. When omitted, the converter picks a destination
 automatically:
 
-- `publishTo: RemotePush` → the remote target defaults based on where the
-  converter runs:
-  - **GitHub-hosted runner** (the `GITHUB_REPOSITORY` environment variable is
-    present): `ghcr.io/<owner>/<repo>:sanitized`, e.g.
-    `ghcr.io/kubehub-io/docs:sanitized`.
-  - **On-prem** (no GitHub environment): `docker.io/<source repository
-    path>:sanitized`, e.g. an `imageTag` of `my-registry.example.com/team/docs:latest`
-    defaults to `docker.io/team/docs:sanitized`.
+- `publishTo: RemotePush` → the remote target defaults to the input `imageTag`
+  with `-noarch` appended to its tag, so the converted image is written to a
+  distinct reference and never overwrites the source. For example:
+  - `imageTag: ghcr.io/kubehub-io/docs:main` → `ghcr.io/kubehub-io/docs:main-noarch`.
+  - `imageTag: my-registry.example.com/team/docs:latest` →
+    `my-registry.example.com/team/docs:latest-noarch`.
+  - An `imageTag` without a tag is treated as `:latest`, so it defaults to
+    `<repository>:latest-noarch`.
 - `publishTo: OCIArchive:<path>` → `outputImageTag` is not used; the archive
   file path comes from `publishTo`.
 
@@ -190,7 +190,7 @@ chmod +x image-volume-converter
 # Export the converted image as an OCI archive to a local file (no registry
 # needed).
 export INPUT_IMAGE_TAG="my-registry.example.com/docs:latest"
-export INPUT_PUBLISH_TO="OCIArchive:/tmp/docs-sanitized.tar"
+export INPUT_PUBLISH_TO="OCIArchive:/tmp/docs-no-arch.tar"
 
 ./image-volume-converter
 ```
@@ -201,8 +201,9 @@ and provide a destination plus credentials:
 ```bash
 export INPUT_IMAGE_TAG="my-registry.example.com/docs:latest"
 export INPUT_PUBLISH_TO="RemotePush"
-# Omit INPUT_OUTPUT_IMAGE_TAG to default to docker.io/<source repository>:sanitized.
-export INPUT_OUTPUT_IMAGE_TAG="ghcr.io/kubehub-io/docs:sanitized"
+# Omit INPUT_OUTPUT_IMAGE_TAG to default to the input tag with -noarch
+# appended (e.g. my-registry.example.com/docs:latest-noarch).
+export INPUT_OUTPUT_IMAGE_TAG="ghcr.io/kubehub-io/docs:latest-noarch"
 # Optional: credentials. Defaults to anonymous pull / public repositories.
 export INPUT_REGISTRY_USERNAME="user"
 export INPUT_REGISTRY_PASSWORD="token"
@@ -214,7 +215,7 @@ export INPUT_REGISTRY_PASSWORD="token"
 | ------------------------ | :------: | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
 | `INPUT_IMAGE_TAG`        |   yes    | —            | Source image to convert.                                                                                                                    |
 | `INPUT_PUBLISH_TO`       |    no    | `RemotePush` | Where to put the converted image: `RemotePush` or `OCIArchive:<path>`.                                                                      |
-| `INPUT_OUTPUT_IMAGE_TAG` |    no    | auto         | Remote destination image. Used with `RemotePush`; defaults to `docker.io/<source repository>:sanitized` on-prem. See [outputImageTag defaulting](#outputimagetag-defaulting). |
+| `INPUT_OUTPUT_IMAGE_TAG` |    no    | auto         | Remote destination image. Used with `RemotePush`; defaults to the input tag with `-noarch` appended. See [outputImageTag defaulting](#outputimagetag-defaulting). |
 | `INPUT_REGISTRY_USERNAME` |   no    | —            | Username for remote registry authentication. Ignored with `OCIArchive`.                                                                     |
 | `INPUT_REGISTRY_PASSWORD` |   no    | —            | Password/token for remote registry authentication. Ignored with `OCIArchive`.                                                               |
 

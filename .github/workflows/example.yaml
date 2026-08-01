@@ -67,14 +67,14 @@ jobs:
       # Kubernetes kubelet accept it though.
       #
       # On pull requests and main-branch pushes: export an OCI archive and
-      # verify the conversion with skopeo. On releases: push the sanitized
+      # verify the conversion with skopeo. On releases: push the no-arch
       # image to ghcr.io so it can be referenced by an image volume.
-      - name: Sanitize arch/os and export OCI archive
+      - name: Remove os/arch from image and export OCI archive
         if: github.event_name != 'release'
         uses: ./
         with:
           imageTag: ghcr.io/${{ github.repository }}-test:${{ env.IMAGE_TAG }}
-          publishTo: OCIArchive:${{ runner.temp }}/sanitized.tar
+          publishTo: OCIArchive:${{ runner.temp }}/no-arch.tar
 
       - name: Ensure skopeo is installed
         if: github.event_name != 'release'
@@ -87,13 +87,13 @@ jobs:
       - name: Inspect converted image platform
         if: github.event_name != 'release'
         run: |
-          skopeo inspect "oci-archive:${{ runner.temp }}/sanitized.tar" \
+          skopeo inspect "oci-archive:${{ runner.temp }}/no-arch.tar" \
             --format 'converted: architecture={{.Architecture}} os={{.Os}}'
 
-      - name: Sanitize arch/os and push to ghcr.io
+      - name: Remove os/arch from image and push to ghcr.io
         if: github.event_name == 'release'
         uses: ./
         with:
           imageTag: ghcr.io/${{ github.repository }}-test:${{ env.IMAGE_TAG }}
-          outputImageTag: ghcr.io/${{ github.repository }}-test:sanitized
+          outputImageTag: ghcr.io/${{ github.repository }}-test:no-arch
           publishTo: RemotePush

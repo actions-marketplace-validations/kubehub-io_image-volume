@@ -1,4 +1,4 @@
-// Command image-volume-converter implements the "OCI image arch/os sanitizer"
+// Command image-volume-converter implements the "no-arch image converter"
 // GitHub Action. It loads an image (preferring the local docker daemon,
 // otherwise pulling it for the platform of the runner), exports it as an OCI
 // archive and unpacks it into an OCI layout directory, rewrites the image
@@ -139,34 +139,34 @@ func run() error {
 	fmt.Printf("image-volume-converter: setting architecture and os to \"unknown\"\n")
 	cfg.Architecture = "unknown"
 	cfg.OS = "unknown"
-	sanitized, err := mutate.ConfigFile(manifestImg, cfg)
+	noArch, err := mutate.ConfigFile(manifestImg, cfg)
 	if err != nil {
 		return fmt.Errorf("updating config: %w", err)
 	}
 
 	ociNewDir := filepath.Join(workDir, "docs-image-volume-converterd")
-	if err := writeLayout(ociNewDir, sanitized); err != nil {
+	if err := writeLayout(ociNewDir, noArch); err != nil {
 		return err
 	}
 	outImg, err := imageFromLayout(ociNewDir)
 	if err != nil {
-		return fmt.Errorf("reading sanitized layout: %w", err)
+		return fmt.Errorf("reading no-arch layout: %w", err)
 	}
 	outCfg, err := outImg.ConfigFile()
 	if err != nil {
 		return err
 	}
 	if outCfg.Architecture != "unknown" || outCfg.OS != "unknown" {
-		return errors.New("config was not sanitized correctly")
+		return errors.New("os/arch were not set to unknown")
 	}
 	newConfigName, err := outImg.ConfigName()
 	if err != nil {
 		return err
 	}
-	fmt.Printf("image-volume-converter: sanitized layout written to %s (config %s, architecture=%q os=%q)\n",
+	fmt.Printf("image-volume-converter: no-arch layout written to %s (config %s, architecture=%q os=%q)\n",
 		ociNewDir, newConfigName, outCfg.Architecture, outCfg.OS)
 
-	// 4) Output the sanitized image: push it to a remote registry, or export it
+	// 4) Output the no-arch image: push it to a remote registry, or export it
 	//    as an OCI archive to a local file.
 	switch dst.mode {
 	case "OCIArchive":
@@ -190,7 +190,7 @@ func run() error {
 	return nil
 }
 
-// destination describes where the sanitized image is written.
+// destination describes where the no-arch image is written.
 type destination struct {
 	// mode is "RemotePush" or "OCIArchive".
 	mode string
@@ -204,10 +204,8 @@ type destination struct {
 // converted image should be written.
 //
 // With publishTo: RemotePush the destination is the remote reference
-// outputImageTag. When outputImageTag is empty it is defaulted: to
-// ghcr.io/<GITHUB_REPOSITORY>:sanitized on GitHub-hosted runners (detected via
-// the GITHUB_REPOSITORY environment variable), or to
-// docker.io/<source repository path>:sanitized on-prem.
+// outputImageTag. When outputImageTag is empty it is defaulted to the input
+// imageTag with "-noarch" appended to its tag (see defaultRemoteTarget).
 //
 // With publishTo: OCIArchive:<path> the destination is a local OCI archive
 // written to <path>; outputImageTag is ignored.
@@ -234,28 +232,21 @@ func resolveDestination(imageTag, outputImageTag, publishTo string) (destination
 }
 
 // defaultRemoteTarget returns a remote destination for a missing
-// outputImageTag. On GitHub-hosted runners it targets
-// ghcr.io/<owner>/<repo>:sanitized; on-prem (no GitHub environment) it targets
-// docker.io/<source repository>:sanitized.
+// outputImageTag: the input imageTag with "-noarch" appended to its tag, so the
+// converted image is written to a distinct reference instead of overwriting the
+// source. For example ghcr.io/kubehub-io/docs:main becomes
+// ghcr.io/kubehub-io/docs:main-noarch. An input without a tag is treated as
+// :latest, so it defaults to <repository>:latest-noarch.
 func defaultRemoteTarget(imageTag string) string {
-	if repo := githubRepository(); repo != "" {
-		return "ghcr.io/" + repo + ":sanitized"
+	ref, err := name.ParseReference(imageTag, name.WithDefaultTag("latest"))
+	if err != nil {
+		return imageTag + ":no-arch"
 	}
-	if ref, err := name.ParseReference(imageTag); err == nil {
-		if path := ref.Context().RepositoryStr(); path != "" {
-			return "docker.io/" + path + ":sanitized"
-		}
+	if _, ok := ref.(name.Tag); ok {
+		return strings.TrimSuffix(imageTag, ":"+ref.Identifier()) + ":" + ref.Identifier() + "-noarch"
 	}
-	return "docker.io/" + imageTag + ":sanitized"
-}
-
-// githubRepository returns the GitHub repository (owner/name) when running on a
-// GitHub-hosted runner, otherwise the empty string.
-func githubRepository() string {
-	if repo := os.Getenv("INPUT_GITHUB_REPOSITORY"); repo != "" {
-		return repo
-	}
-	return os.Getenv("GITHUB_REPOSITORY")
+	// Digest references cannot carry a tag; fall back to the same repository.
+	return ref.Context().Name() + ":no-arch"
 }
 
 // loadImage returns the image from the local docker daemon when available,
