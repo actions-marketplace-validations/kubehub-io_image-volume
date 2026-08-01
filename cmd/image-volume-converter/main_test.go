@@ -212,32 +212,37 @@ func TestPublishToRegistry(t *testing.T) {
 
 func TestResolveDestination(t *testing.T) {
 	cases := []struct {
-		name      string
-		imageTag  string
-		targetTag string
-		publishTo string
-		onPrem    bool
-		wantRef   string
-		wantErr   string
+		name           string
+		imageTag       string
+		outputImageTag string
+		publishTo      string
+		onPrem         bool
+		wantMode       string
+		wantRef        string
+		wantPath       string
+		wantErr        string
 	}{
 		{
-			name:      "remote push default mode",
-			imageTag:  "ghcr.io/kubehub-io/docs:main",
-			targetTag: "ghcr.io/kubehub-io/docs:sanitized",
-			publishTo: "",
-			wantRef:   "ghcr.io/kubehub-io/docs:sanitized",
+			name:           "remote push default mode",
+			imageTag:       "ghcr.io/kubehub-io/docs:main",
+			outputImageTag: "ghcr.io/kubehub-io/docs:sanitized",
+			publishTo:      "",
+			wantMode:       "RemotePush",
+			wantRef:        "ghcr.io/kubehub-io/docs:sanitized",
 		},
 		{
-			name:      "remote push explicit",
-			imageTag:  "ghcr.io/kubehub-io/docs:main",
-			targetTag: "ghcr.io/kubehub-io/docs:sanitized",
-			publishTo: "RemotePush",
-			wantRef:   "ghcr.io/kubehub-io/docs:sanitized",
+			name:           "remote push explicit",
+			imageTag:       "ghcr.io/kubehub-io/docs:main",
+			outputImageTag: "ghcr.io/kubehub-io/docs:sanitized",
+			publishTo:      "RemotePush",
+			wantMode:       "RemotePush",
+			wantRef:        "ghcr.io/kubehub-io/docs:sanitized",
 		},
 		{
 			name:      "remote push defaulted to ghcr.io on github runner",
 			imageTag:  "ghcr.io/kubehub-io/docs:main",
 			publishTo: "RemotePush",
+			wantMode:  "RemotePush",
 			wantRef:   "ghcr.io/kubehub-io/docs:sanitized",
 		},
 		{
@@ -245,40 +250,55 @@ func TestResolveDestination(t *testing.T) {
 			imageTag:  "docker.io/kubehub-io/docs:main",
 			publishTo: "RemotePush",
 			onPrem:    true,
+			wantMode:  "RemotePush",
 			wantRef:   "index.docker.io/kubehub-io/docs:sanitized",
 		},
 		{
-			name:      "remote push docker.io explicit",
-			imageTag:  "docker.io/kubehub-io/docs:main",
-			targetTag: "docker.io/kubehub-io/docs:sanitized",
-			publishTo: "RemotePush",
-			wantRef:   "index.docker.io/kubehub-io/docs:sanitized",
+			name:           "remote push docker.io explicit",
+			imageTag:       "docker.io/kubehub-io/docs:main",
+			outputImageTag: "docker.io/kubehub-io/docs:sanitized",
+			publishTo:      "RemotePush",
+			wantMode:       "RemotePush",
+			wantRef:        "index.docker.io/kubehub-io/docs:sanitized",
+		},
+		{
+			name:      "oci archive absolute path",
+			imageTag:  "ghcr.io/kubehub-io/docs:main",
+			publishTo: "OCIArchive:/tmp/docs-sanitized.tar",
+			wantMode:  "OCIArchive",
+			wantPath:  "/tmp/docs-sanitized.tar",
+		},
+		{
+			name:      "oci archive relative path",
+			imageTag:  "ghcr.io/kubehub-io/docs:main",
+			publishTo: "OCIArchive:docs-sanitized.tar",
+			wantMode:  "OCIArchive",
+			wantPath:  "docs-sanitized.tar",
+		},
+		{
+			name:      "oci archive path trimmed",
+			imageTag:  "ghcr.io/kubehub-io/docs:main",
+			publishTo: " OCIArchive: /tmp/docs-sanitized.tar ",
+			wantMode:  "OCIArchive",
+			wantPath:  "/tmp/docs-sanitized.tar",
+		},
+		{
+			name:      "oci archive missing path",
+			imageTag:  "ghcr.io/kubehub-io/docs:main",
+			publishTo: "OCIArchive",
+			wantErr:   "requires an output file path",
+		},
+		{
+			name:      "oci archive empty path",
+			imageTag:  "ghcr.io/kubehub-io/docs:main",
+			publishTo: "OCIArchive:",
+			wantErr:   "requires an output file path",
 		},
 		{
 			name:      "invalid publishTo",
 			imageTag:  "ghcr.io/kubehub-io/docs:main",
 			publishTo: "Registry",
 			wantErr:   `invalid publishTo "Registry"`,
-		},
-		{
-			name:      "docker defaults targetTag to imageTag",
-			imageTag:  "ghcr.io/kubehub-io/docs:main",
-			publishTo: "DockerDaemon",
-			wantRef:   "ghcr.io/kubehub-io/docs:main",
-		},
-		{
-			name:      "docker with explicit tag",
-			imageTag:  "ghcr.io/kubehub-io/docs:main",
-			targetTag: "ghcr.io/kubehub-io/docs:sanitized",
-			publishTo: "DockerDaemon",
-			wantRef:   "ghcr.io/kubehub-io/docs:sanitized",
-		},
-		{
-			name:      "docker destination must be a tag",
-			imageTag:  "ghcr.io/kubehub-io/docs:main",
-			targetTag: "ghcr.io/kubehub-io/docs@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-			publishTo: "DockerDaemon",
-			wantErr:   "can only contain the characters",
 		},
 	}
 
@@ -290,7 +310,7 @@ func TestResolveDestination(t *testing.T) {
 			} else {
 				t.Setenv("INPUT_GITHUB_REPOSITORY", "kubehub-io/docs")
 			}
-			ref, err := resolveDestination(tc.imageTag, tc.targetTag, tc.publishTo)
+			dst, err := resolveDestination(tc.imageTag, tc.outputImageTag, tc.publishTo)
 			if tc.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 					t.Fatalf("resolveDestination() error = %v, want containing %q", err, tc.wantErr)
@@ -300,10 +320,66 @@ func TestResolveDestination(t *testing.T) {
 			if err != nil {
 				t.Fatalf("resolveDestination() unexpected error: %v", err)
 			}
-			if got := ref.Name(); got != tc.wantRef {
-				t.Fatalf("resolveDestination() = %q, want %q", got, tc.wantRef)
+			if dst.mode != tc.wantMode {
+				t.Fatalf("resolveDestination() mode = %q, want %q", dst.mode, tc.wantMode)
+			}
+			switch tc.wantMode {
+			case "RemotePush":
+				if dst.ref == nil || dst.ref.Name() != tc.wantRef {
+					t.Fatalf("resolveDestination() ref = %v, want %q", dst.ref, tc.wantRef)
+				}
+			case "OCIArchive":
+				if dst.path != tc.wantPath {
+					t.Fatalf("resolveDestination() path = %q, want %q", dst.path, tc.wantPath)
+				}
 			}
 		})
+	}
+}
+
+// TestExportOCIArchive exports a sanitized OCI layout as a tar archive and
+// reads it back to confirm the archive is a valid OCI layout carrying the
+// sanitized config.
+func TestExportOCIArchive(t *testing.T) {
+	img := newTestImage(t)
+	cfg, err := img.ConfigFile()
+	if err != nil {
+		t.Fatalf("ConfigFile: %v", err)
+	}
+	cfg.Architecture = "unknown"
+	cfg.OS = "unknown"
+	sanitized, err := mutate.ConfigFile(img, cfg)
+	if err != nil {
+		t.Fatalf("mutate.ConfigFile: %v", err)
+	}
+
+	dir := t.TempDir()
+	ociDir := filepath.Join(dir, "oci")
+	if err := writeLayout(ociDir, sanitized); err != nil {
+		t.Fatalf("writeLayout: %v", err)
+	}
+	archive := filepath.Join(dir, "nested", "out.tar")
+	if err := exportOCIArchive(archive, ociDir); err != nil {
+		t.Fatalf("exportOCIArchive: %v", err)
+	}
+	if _, err := os.Stat(archive); err != nil {
+		t.Fatalf("archive not created: %v", err)
+	}
+
+	unpacked := filepath.Join(dir, "unpacked")
+	if err := unpack(archive, unpacked); err != nil {
+		t.Fatalf("unpack: %v", err)
+	}
+	got, err := imageFromLayout(unpacked)
+	if err != nil {
+		t.Fatalf("imageFromLayout: %v", err)
+	}
+	gotCfg, err := got.ConfigFile()
+	if err != nil {
+		t.Fatalf("ConfigFile: %v", err)
+	}
+	if gotCfg.Architecture != "unknown" || gotCfg.OS != "unknown" {
+		t.Fatalf("config not sanitized in archive: arch=%q os=%q", gotCfg.Architecture, gotCfg.OS)
 	}
 }
 

@@ -40,19 +40,24 @@ produces.
 ## How it works
 
 `image-volume-converter` takes an already-built image, rewrites its OCI config
-so that `architecture` and `os` are `unknown`, and either loads the result back
-into the local docker daemon or pushes it to ghcr.io. It works the same way
-whether you use it as a GitHub Action or as a standalone binary:
+so that `architecture` and `os` are `unknown`, and either pushes the result to a
+remote registry or writes it as an OCI archive to a local file. It works the
+same way whether you use it as a GitHub Action or as a standalone binary:
 
 1. Load the source image — from the local docker daemon if available, otherwise
    by pulling it from its registry for the platform of the current machine.
 2. Export the image as an OCI archive and unpack it into an OCI layout.
 3. Resolve `index.json → manifest → config`, set `architecture` and `os` to
    `unknown`, and repack a fresh layout.
-4. Load the converted image into the local docker daemon, or push it to the
-   destination repository on ghcr.io.
+4. Push the converted image to a remote registry, or write it as an OCI archive
+   to a local file.
 
 Only the image config is rewritten; the layer blobs are reused as-is.
+
+> **Docker vs containerd/kubelet:** the converted image declares `os`/`arch` as
+> `unknown`. Docker's classic image store refuses to load such images, but
+> **containerd and the Kubernetes kubelet accept them** — which is exactly what
+> makes image volumes work on any node platform.
 
 ## Usage as a GitHub Action
 
@@ -89,52 +94,73 @@ jobs:
         uses: kubehub-io/image-volume@v1
         with:
           imageTag: ghcr.io/${{ github.repository }}-test:main-latest
-          targetImageTag: ghcr.io/${{ github.repository }}-test:sanitized
+          outputImageTag: ghcr.io/${{ github.repository }}-test:sanitized
 ```
 
 ### publishTo
 
 `publishTo` controls where the converted image goes:
 
-| Value          | Behavior                                                                                                       |
-| -------------- | -------------------------------------------------------------------------------------------------------------- |
-| `RemotePush`   | Push the converted image to a remote registry (`targetImageTag`). **Default.**                                |
-| `DockerDaemon` | Load the converted image into the local docker daemon instead, e.g. to inspect it or export it for on-prem use. |
+| Value                   | Behavior                                                                                                   |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `RemotePush`            | Push the converted image to a remote registry (`outputImageTag`). **Default.**                            |
+| `OCIArchive:<path>`     | Write an OCI archive (a tar of an OCI layout) to the local file `<path>` instead.                          |
 
-To keep the converted image on the runner instead of pushing it to ghcr.io, set
-`publishTo: DockerDaemon`. The image is loaded into the local docker daemon
-under `targetImageTag` (or `imageTag` if omitted):
+To push the converted image to ghcr.io, use the default `RemotePush`:
 
 ```yaml
-      - name: Sanitize and load into local docker daemon
+      - name: Sanitize and push to ghcr.io
         uses: kubehub-io/image-volume@v1
         with:
           imageTag: ghcr.io/${{ github.repository }}-test:main-latest
-          targetImageTag: ghcr.io/${{ github.repository }}-test:sanitized
-          publishTo: DockerDaemon
+          outputImageTag: ghcr.io/${{ github.repository }}-test:sanitized
 ```
+
+To get an OCI archive on the runner instead of pushing anywhere — e.g. to
+inspect it with `skopeo`/`regctl`, or to ship it to an on-prem cluster — use
+`OCIArchive:<path>`. The path is a local file the archive is written to;
+`outputImageTag` is ignored:
+
+```yaml
+      - name: Sanitize and export OCI archive
+        uses: kubehub-io/image-volume@v1
+        with:
+          imageTag: ghcr.io/${{ github.repository }}-test:main-latest
+          publishTo: OCIArchive:${{ runner.temp }}/sanitized.tar
+
+      - name: Inspect the converted image
+        run: |
+          skopeo inspect "oci-archive:${{ runner.temp }}/sanitized.tar" \
+            --format 'architecture={{.Architecture}} os={{.Os}}'
+```
+
+> **Note:** Docker's classic image store refuses to load images whose `os`/`arch`
+> do not match the daemon host (moby's `image.CheckOS`), and the converted image
+> declares `os`/`arch` as `unknown`. It therefore cannot be `docker load`-ed;
+> use an OCI archive (inspectable with `skopeo`/`regctl`, importable with
+> `ctr images import`) or push it to a registry. containerd and the Kubernetes
+> kubelet accept the sanitized image.
 
 ### Inputs
 
 | Input               | Required | Default          | Description                                                                                                                                                                                     |
 | ------------------- | :------: | ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `imageTag`          |   yes    | —                | The source image to convert, e.g. `ghcr.io/kubehub-io/docs:main-20260731-2`. The local docker daemon is checked first; if the image is not there it is pulled from its registry. Multi-arch images are resolved to the platform of the current runner. |
-| `targetImageTag`    |    no    | auto             | The destination image reference, e.g. `ghcr.io/kubehub-io/docs:sanitized`. With `publishTo: DockerDaemon` this is the tag the image is loaded under in the local docker daemon. With `publishTo: RemotePush` it is the remote target. See [defaulting](#targetimagetag-defaulting). |
-| `publishTo`         |    no    | `RemotePush`     | Where to put the converted image: `RemotePush` (default) or `DockerDaemon`. See [publishTo](#publishto).                                                                                       |
-| `registryUsername`  |    no    | `github.actor`   | Username used to authenticate against the remote registry. Ignored when `publishTo: DockerDaemon`.                                                                                              |
-| `registryPassword`  |    no    | `github.token`   | Password/token used to authenticate against the remote registry. Ignored when `publishTo: DockerDaemon`.                                                                                         |
+| `outputImageTag`    |    no    | auto             | The remote destination image reference, e.g. `ghcr.io/kubehub-io/docs:sanitized`. Used with `publishTo: RemotePush`. See [defaulting](#outputimagetag-defaulting). |
+| `publishTo`         |    no    | `RemotePush`     | Where to put the converted image: `RemotePush` (default) or `OCIArchive:<path>`. See [publishTo](#publishto).                                                                                  |
+| `registryUsername`  |    no    | `github.actor`   | Username used to authenticate against the remote registry. Ignored when `publishTo: OCIArchive`.                                                                                                |
+| `registryPassword`  |    no    | `github.token`   | Password/token used to authenticate against the remote registry. Ignored when `publishTo: OCIArchive`.                                                                                          |
 
-Both `imageTag` and `targetImageTag` accept full image references, including a
+Both `imageTag` and `outputImageTag` accept full image references, including a
 tag or digest. Everything after the source is converted from the source image:
 tags, manifest lists, and (if you run the converter on a node of the matching
 platform) per-architecture images.
 
-#### targetImageTag defaulting
+#### outputImageTag defaulting
 
-`targetImageTag` is optional. When omitted, the converter picks a destination
+`outputImageTag` is optional. When omitted, the converter picks a destination
 automatically:
 
-- `publishTo: DockerDaemon` → the local tag defaults to `imageTag`.
 - `publishTo: RemotePush` → the remote target defaults based on where the
   converter runs:
   - **GitHub-hosted runner** (the `GITHUB_REPOSITORY` environment variable is
@@ -143,8 +169,10 @@ automatically:
   - **On-prem** (no GitHub environment): `docker.io/<source repository
     path>:sanitized`, e.g. an `imageTag` of `my-registry.example.com/team/docs:latest`
     defaults to `docker.io/team/docs:sanitized`.
+- `publishTo: OCIArchive:<path>` → `outputImageTag` is not used; the archive
+  file path comes from `publishTo`.
 
-Set `targetImageTag` explicitly whenever you want a specific tag or registry.
+Set `outputImageTag` explicitly whenever you want a specific tag or registry.
 
 ## Standalone usage (on-prem CI/CD)
 
@@ -159,11 +187,10 @@ curl -fSL -o image-volume-converter \
   "https://github.com/kubehub-io/image-volume/releases/latest/download/image-volume-converter_linux_amd64"
 chmod +x image-volume-converter
 
-# Load the converted image into the local docker daemon (no registry needed).
+# Export the converted image as an OCI archive to a local file (no registry
+# needed).
 export INPUT_IMAGE_TAG="my-registry.example.com/docs:latest"
-export INPUT_PUBLISH_TO="DockerDaemon"
-# The tag the image is loaded under in the daemon; defaults to INPUT_IMAGE_TAG.
-export INPUT_TARGET_IMAGE_TAG="my-registry.example.com/docs:sanitized"
+export INPUT_PUBLISH_TO="OCIArchive:/tmp/docs-sanitized.tar"
 
 ./image-volume-converter
 ```
@@ -174,8 +201,8 @@ and provide a destination plus credentials:
 ```bash
 export INPUT_IMAGE_TAG="my-registry.example.com/docs:latest"
 export INPUT_PUBLISH_TO="RemotePush"
-# Omit INPUT_TARGET_IMAGE_TAG to default to docker.io/<source repository>:sanitized.
-export INPUT_TARGET_IMAGE_TAG="ghcr.io/kubehub-io/docs:sanitized"
+# Omit INPUT_OUTPUT_IMAGE_TAG to default to docker.io/<source repository>:sanitized.
+export INPUT_OUTPUT_IMAGE_TAG="ghcr.io/kubehub-io/docs:sanitized"
 # Optional: credentials. Defaults to anonymous pull / public repositories.
 export INPUT_REGISTRY_USERNAME="user"
 export INPUT_REGISTRY_PASSWORD="token"
@@ -183,20 +210,25 @@ export INPUT_REGISTRY_PASSWORD="token"
 ./image-volume-converter
 ```
 
-| Environment variable   | Required | Default    | Description                                                                                                                              |
-| ---------------------- | :------: | ---------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| `INPUT_IMAGE_TAG`      |   yes    | —          | Source image to convert.                                                                                                                 |
-| `INPUT_PUBLISH_TO`     |    no    | `RemotePush` | Where to put the converted image: `RemotePush` or `DockerDaemon`.                                                                      |
-| `INPUT_TARGET_IMAGE_TAG` |   no    | auto       | Destination image. With `DockerDaemon` it is the local tag to load under (defaults to `INPUT_IMAGE_TAG`); with `RemotePush` it is the remote target. See [targetImageTag defaulting](#targetimagetag-defaulting). |
-| `INPUT_REGISTRY_USERNAME` |   no    | —          | Username for remote registry authentication. Ignored with `DockerDaemon`.                                                               |
-| `INPUT_REGISTRY_PASSWORD` |   no    | —          | Password/token for remote registry authentication. Ignored with `DockerDaemon`.                                                          |
+| Environment variable     | Required | Default      | Description                                                                                                                                 |
+| ------------------------ | :------: | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `INPUT_IMAGE_TAG`        |   yes    | —            | Source image to convert.                                                                                                                    |
+| `INPUT_PUBLISH_TO`       |    no    | `RemotePush` | Where to put the converted image: `RemotePush` or `OCIArchive:<path>`.                                                                      |
+| `INPUT_OUTPUT_IMAGE_TAG` |    no    | auto         | Remote destination image. Used with `RemotePush`; defaults to `docker.io/<source repository>:sanitized` on-prem. See [outputImageTag defaulting](#outputimagetag-defaulting). |
+| `INPUT_REGISTRY_USERNAME` |   no    | —            | Username for remote registry authentication. Ignored with `OCIArchive`.                                                                     |
+| `INPUT_REGISTRY_PASSWORD` |   no    | —            | Password/token for remote registry authentication. Ignored with `OCIArchive`.                                                               |
 
 When pushing to a public registry repository, no credentials are needed. For
 private repositories, provide credentials with push access.
 
+> **Note:** the converted image declares `os`/`arch` as `unknown`, so it cannot
+> be loaded by Docker's classic image store (`docker load` fails). containerd
+> and the Kubernetes kubelet accept it — use `ctr images import` or
+> `skopeo copy` to load the OCI archive into a containerd-based node.
+
 > **Disclaimer:** The converter is developed and tested on **Linux**. Binaries
 > are also built for **Windows** and **macOS**, but those platforms are **not
-> tested** — `RemotePush` mode should work, while the `DockerDaemon` mode is
+> tested** — `RemotePush` mode should work, while the `OCIArchive` mode is
 > untested there and may not behave as expected.
 
 ## Local development

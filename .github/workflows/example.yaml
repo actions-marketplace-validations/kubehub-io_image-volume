@@ -9,10 +9,14 @@ on:
     branches:
       - main
       - master
+  release:
+    types:
+      - published
   workflow_dispatch:
 
 permissions:
   contents: read
+  packages: write
 
 jobs:
   example:
@@ -38,7 +42,7 @@ jobs:
 
       - name: Build Docker image
         id: build
-        uses: docker/build-push-action@v4
+        uses: docker/build-push-action@v7
         with:
           builder: ${{ steps.buildx.outputs.name }}
           context: .
@@ -58,14 +62,38 @@ jobs:
           docker inspect ghcr.io/${{ github.repository }}-test:${{ env.IMAGE_TAG }} \
             --format 'original: architecture={{.Architecture}} os={{.Os}}'
 
-      - name: Sanitize arch/os and load into local docker daemon
+      # The converted image declares os/arch "unknown", which Docker's classic
+      # image store refuses to load (moby's image.CheckOS). containerd and the
+      # Kubernetes kubelet accept it though.
+      #
+      # On pull requests and main-branch pushes: export an OCI archive and
+      # verify the conversion with skopeo. On releases: push the sanitized
+      # image to ghcr.io so it can be referenced by an image volume.
+      - name: Sanitize arch/os and export OCI archive
+        if: github.event_name != 'release'
         uses: ./
         with:
           imageTag: ghcr.io/${{ github.repository }}-test:${{ env.IMAGE_TAG }}
-          targetImageTag: ghcr.io/${{ github.repository }}-test:sanitized
-          publishTo: DockerDaemon
+          publishTo: OCIArchive:${{ runner.temp }}/sanitized.tar
+
+      - name: Ensure skopeo is installed
+        if: github.event_name != 'release'
+        run: |
+          if ! command -v skopeo >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y skopeo
+          fi
 
       - name: Inspect converted image platform
+        if: github.event_name != 'release'
         run: |
-          docker inspect ghcr.io/${{ github.repository }}-test:sanitized \
+          skopeo inspect "oci-archive:${{ runner.temp }}/sanitized.tar" \
             --format 'converted: architecture={{.Architecture}} os={{.Os}}'
+
+      - name: Sanitize arch/os and push to ghcr.io
+        if: github.event_name == 'release'
+        uses: ./
+        with:
+          imageTag: ghcr.io/${{ github.repository }}-test:${{ env.IMAGE_TAG }}
+          outputImageTag: ghcr.io/${{ github.repository }}-test:sanitized
+          publishTo: RemotePush

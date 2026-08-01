@@ -1,9 +1,9 @@
 name: 'OCI Image Arch/OS Sanitizer'
 description: >-
-  Loads an image (preferring the local docker daemon, otherwise pulling it for
-  the platform of the current runner), exports it as an OCI archive, rewrites
-  its config so architecture/os are "unknown", and either loads the result back
-  into the local docker daemon or publishes it to a ghcr.io repository.
+  Help you build a container image volume for the Kubernetes use case:
+  - solves the architecture/os mismatch that blocks image volumes on nodes.
+  - solves multi-arch problems for data volumes without a per-platform build
+  matrix.
 branding:
   icon: 'package'
   color: 'blue'
@@ -11,36 +11,34 @@ branding:
 inputs:
   imageTag:
     description: >-
-      Source image reference, e.g. ghcr.io/kubehub-io/docs:main-20260731-2.
+      Source image reference, e.g. ghcr.io/kubehub-io/docs:main-20260801-2.
       Searches the local docker daemon first; if absent, the image is pulled
       from its registry. Multi-arch images are resolved to the platform of the
       current runner.
     required: true
-  targetImageTag:
+  outputImageTag:
     description: >-
-      Destination image reference, e.g. ghcr.io/kubehub-io/docs:sanitized.
-      With publishTo: DockerDaemon this is the tag the converted image is
-      loaded under in the local docker daemon (defaults to imageTag). With
-      publishTo: RemotePush this is the remote target; when omitted it is
-      defaulted to ghcr.io/<owner>/<repo>:sanitized on GitHub-hosted runners,
-      or to docker.io/<source repository>:sanitized on-prem.
+      Destination image reference, e.g. ghcr.io/kubehub-io/docs:sanitized. Used
+      with publishTo: RemotePush. When omitted it defaults to
+      ghcr.io/<owner>/<repo>:sanitized on GitHub-hosted runners, or to
+      docker.io/<source repository>:sanitized on-prem.
     required: false
     default: ''
   publishTo:
     description: >-
-      Where to put the converted image. DockerDaemon loads it into the local
-      docker daemon; RemotePush pushes it to a remote registry. Defaults to
-      RemotePush.
+      Where to put the converted image. RemotePush pushes it to outputImageTag;
+      OCIArchive:<path> writes an OCI archive to the local file <path>.
+      Defaults to RemotePush.
     required: false
     default: 'RemotePush'
   registryUsername:
-    description: 'Username used to authenticate against ghcr.io. Defaults to github.actor.'
+    description: 'Username used to authenticate against the remote registry. Defaults to github.actor.'
     required: false
     default: ''
   registryPassword:
     description: >-
-      Password/token used to authenticate against ghcr.io. Defaults to
-      secrets.GITHUB_TOKEN.
+      Password/token used to authenticate against the remote registry. Defaults
+      to secrets.GITHUB_TOKEN.
     required: false
     default: ''
 
@@ -83,7 +81,7 @@ runs:
       shell: bash
       env:
         INPUT_IMAGE_TAG: ${{ inputs.imageTag }}
-        INPUT_TARGET_IMAGE_TAG: ${{ inputs.targetImageTag }}
+        INPUT_OUTPUT_IMAGE_TAG: ${{ inputs.outputImageTag }}
         INPUT_PUBLISH_TO: ${{ inputs.publishTo }}
         INPUT_GITHUB_REPOSITORY: ${{ github.repository }}
         INPUT_REGISTRY_USERNAME: ${{ inputs.registryUsername }}

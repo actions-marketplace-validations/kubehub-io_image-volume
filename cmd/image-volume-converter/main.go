@@ -2,8 +2,9 @@
 // GitHub Action. It loads an image (preferring the local docker daemon,
 // otherwise pulling it for the platform of the runner), exports it as an OCI
 // archive and unpacks it into an OCI layout directory, rewrites the image
-// config so that `architecture` and `os` are `unknown`, and finally publishes
-// the resulting image to a ghcr.io repository.
+// config so that `architecture` and `os` are `unknown`, and finally either
+// pushes the resulting image to a remote registry or writes it as an OCI
+// archive to a local file.
 package main
 
 import (
@@ -38,12 +39,11 @@ func run() error {
 	ctx := context.Background()
 
 	imageTag := os.Getenv("INPUT_IMAGE_TAG")
-	targetTag := os.Getenv("INPUT_TARGET_IMAGE_TAG")
+	outputImageTag := os.Getenv("INPUT_OUTPUT_IMAGE_TAG")
 	publishTo := os.Getenv("INPUT_PUBLISH_TO")
 	if publishTo == "" {
 		publishTo = "RemotePush"
 	}
-	toDocker := strings.EqualFold(publishTo, "DockerDaemon")
 	username := os.Getenv("INPUT_REGISTRY_USERNAME")
 	password := os.Getenv("INPUT_REGISTRY_PASSWORD")
 	actor := os.Getenv("INPUT_GITHUB_ACTOR")
@@ -58,17 +58,18 @@ func run() error {
 	if password == "" {
 		password = token
 	}
-	if !toDocker && password == "" {
+
+	dst, err := resolveDestination(imageTag, outputImageTag, publishTo)
+	if err != nil {
+		return err
+	}
+	if dst.mode == "RemotePush" && password == "" {
 		fmt.Fprintln(os.Stderr, "image-volume-converter: warning: no registry credentials provided; pushing to a remote registry may fail unless the repository is public")
 	}
 
 	srcRef, err := name.ParseReference(imageTag)
 	if err != nil {
 		return fmt.Errorf("parsing imageTag %q: %w", imageTag, err)
-	}
-	dstRef, err := resolveDestination(imageTag, targetTag, publishTo)
-	if err != nil {
-		return err
 	}
 
 	auth := authn.Anonymous
@@ -165,71 +166,77 @@ func run() error {
 	fmt.Printf("image-volume-converter: sanitized layout written to %s (config %s, architecture=%q os=%q)\n",
 		ociNewDir, newConfigName, outCfg.Architecture, outCfg.OS)
 
-	// 4) Output the packed layout: load it into the local docker daemon, or
-	//    push it to the target remote registry.
-	if toDocker {
-		dstTag, ok := dstRef.(name.Tag)
-		if !ok {
-			return fmt.Errorf("internal error: docker destination is not a tag")
+	// 4) Output the sanitized image: push it to a remote registry, or export it
+	//    as an OCI archive to a local file.
+	switch dst.mode {
+	case "OCIArchive":
+		fmt.Printf("image-volume-converter: exporting %s as OCI archive to %s\n", srcRef, dst.path)
+		if err := exportOCIArchive(dst.path, ociNewDir); err != nil {
+			return err
 		}
-		fmt.Printf("image-volume-converter: loading %s into local docker daemon as %s\n", srcRef, dstTag)
-		if _, err := daemon.Write(dstTag, outImg); err != nil {
-			return fmt.Errorf("loading image into docker daemon: %w", err)
+		fmt.Printf("image-volume-converter: exported OCI archive to %s\n", dst.path)
+	case "RemotePush":
+		fmt.Printf("image-volume-converter: publishing %s -> %s\n", srcRef, dst.ref)
+		if err := remote.Write(dst.ref, outImg,
+			remote.WithAuth(auth),
+			remote.WithContext(ctx),
+		); err != nil {
+			return fmt.Errorf("publishing image: %w", err)
 		}
-		fmt.Printf("image-volume-converter: loaded %s into local docker daemon\n", dstTag.Name())
-		return nil
+		fmt.Printf("image-volume-converter: published %s\n", dst.ref.Name())
+	default:
+		return fmt.Errorf("internal error: unknown destination mode %q", dst.mode)
 	}
-
-	fmt.Printf("image-volume-converter: publishing %s -> %s\n", srcRef, dstRef)
-	if err := remote.Write(dstRef, outImg,
-		remote.WithAuth(auth),
-		remote.WithContext(ctx),
-	); err != nil {
-		return fmt.Errorf("publishing image: %w", err)
-	}
-	fmt.Printf("image-volume-converter: published %s\n", dstRef.Name())
 	return nil
 }
 
-// resolveDestination validates the publishTo mode and destination inputs, and
-// returns the parsed reference.
+// destination describes where the sanitized image is written.
+type destination struct {
+	// mode is "RemotePush" or "OCIArchive".
+	mode string
+	// ref is the remote reference to push to when mode is RemotePush.
+	ref name.Reference
+	// path is the output archive file when mode is OCIArchive.
+	path string
+}
+
+// resolveDestination validates the publishTo mode and returns where the
+// converted image should be written.
 //
-// With publishTo: DockerDaemon the destination is the tag the image is loaded
-// under in the local docker daemon, and targetImageTag defaults to imageTag.
-//
-// With publishTo: RemotePush the destination is a remote registry reference.
-// When targetImageTag is empty it is defaulted: to
+// With publishTo: RemotePush the destination is the remote reference
+// outputImageTag. When outputImageTag is empty it is defaulted: to
 // ghcr.io/<GITHUB_REPOSITORY>:sanitized on GitHub-hosted runners (detected via
 // the GITHUB_REPOSITORY environment variable), or to
 // docker.io/<source repository path>:sanitized on-prem.
-func resolveDestination(imageTag, targetTag, publishTo string) (name.Reference, error) {
-	switch strings.ToLower(publishTo) {
-	case "dockerdaemon":
-		if targetTag == "" {
-			targetTag = imageTag
-		}
-		tag, err := name.NewTag(targetTag)
-		if err != nil {
-			return nil, fmt.Errorf("parsing targetImageTag %q as a tag: %w", targetTag, err)
-		}
-		return tag, nil
+//
+// With publishTo: OCIArchive:<path> the destination is a local OCI archive
+// written to <path>; outputImageTag is ignored.
+func resolveDestination(imageTag, outputImageTag, publishTo string) (destination, error) {
+	mode, arg, hasArg := strings.Cut(publishTo, ":")
+	switch strings.ToLower(strings.TrimSpace(mode)) {
 	case "", "remotepush":
-		if targetTag == "" {
-			targetTag = defaultRemoteTarget(imageTag)
+		if outputImageTag == "" {
+			outputImageTag = defaultRemoteTarget(imageTag)
 		}
-		ref, err := name.ParseReference(targetTag)
+		ref, err := name.ParseReference(outputImageTag)
 		if err != nil {
-			return nil, fmt.Errorf("parsing targetImageTag %q: %w", targetTag, err)
+			return destination{}, fmt.Errorf("parsing outputImageTag %q: %w", outputImageTag, err)
 		}
-		return ref, nil
+		return destination{mode: "RemotePush", ref: ref}, nil
+	case "ociarchive":
+		if !hasArg || strings.TrimSpace(arg) == "" {
+			return destination{}, errors.New("publishTo OCIArchive requires an output file path, e.g. OCIArchive:/tmp/image.tar")
+		}
+		return destination{mode: "OCIArchive", path: strings.TrimSpace(arg)}, nil
 	default:
-		return nil, fmt.Errorf("invalid publishTo %q (supported: DockerDaemon, RemotePush)", publishTo)
+		return destination{}, fmt.Errorf("invalid publishTo %q (supported: RemotePush, OCIArchive:<path>)", publishTo)
 	}
 }
 
-// defaultRemoteTarget returns a remote destination for a missing targetImageTag.
-// On GitHub-hosted runners it targets ghcr.io/<owner>/<repo>:sanitized; on-prem
-// (no GitHub environment) it targets docker.io/<source repository>:sanitized.
+// defaultRemoteTarget returns a remote destination for a missing
+// outputImageTag. On GitHub-hosted runners it targets
+// ghcr.io/<owner>/<repo>:sanitized; on-prem (no GitHub environment) it targets
+// docker.io/<source repository>:sanitized.
 func defaultRemoteTarget(imageTag string) string {
 	if repo := githubRepository(); repo != "" {
 		return "ghcr.io/" + repo + ":sanitized"
@@ -325,6 +332,15 @@ func imageFromLayout(dir string) (v1.Image, error) {
 		return nil, errors.New("layout contains no manifests")
 	}
 	return ii.Image(idx.Manifests[0].Digest)
+}
+
+// exportOCIArchive packs the OCI layout directory ociDir into a tar archive at
+// path (creating parent directories as needed).
+func exportOCIArchive(path, ociDir string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return packDir(ociDir, path)
 }
 
 // packDir creates a tar archive of srcDir with paths relative to srcDir (the
