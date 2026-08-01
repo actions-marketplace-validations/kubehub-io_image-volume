@@ -1,0 +1,79 @@
+name: 'OCI Image Arch/OS Sanitizer'
+description: >-
+  Loads an image (preferring the local docker daemon, otherwise pulling it for
+  the platform of the current runner), exports it as an OCI archive, rewrites
+  its config so architecture/os are "unknown", and publishes the result to a
+  ghcr.io repository.
+branding:
+  icon: 'package'
+  color: 'blue'
+
+inputs:
+  imageTag:
+    description: >-
+      Source image reference, e.g. ghcr.io/kubehub-io/docs:main-20260731-2.
+      Searches the local docker daemon first; if absent, the image is pulled
+      from its registry. Multi-arch images are resolved to the platform of the
+      current runner.
+    required: true
+  publishImageTag:
+    description: >-
+      Destination image reference on ghcr.io, e.g. ghcr.io/kubehub-io/docs:sanitized.
+      Only ghcr.io is supported for now.
+    required: true
+  registryUsername:
+    description: 'Username used to authenticate against ghcr.io. Defaults to github.actor.'
+    required: false
+    default: ''
+  registryPassword:
+    description: >-
+      Password/token used to authenticate against ghcr.io. Defaults to
+      secrets.GITHUB_TOKEN.
+    required: false
+    default: ''
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Install oci-sanitize binary
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+        ACTION_REPO: ${{ github.action_repository }}
+      run: |
+        set -euo pipefail
+
+        REPO="${ACTION_REPO:-${GITHUB_REPOSITORY}}"
+        case "$(uname -m)" in
+          x86_64|amd64)  GOARCH=amd64 ;;
+          aarch64|arm64) GOARCH=arm64 ;;
+          armv7l)        GOARCH=armv7 ;;
+          i386|i686)     GOARCH=386 ;;
+          *) echo "::error::unsupported runner architecture $(uname -m)"; exit 1 ;;
+        esac
+
+        BIN="$RUNNER_TEMP/oci-sanitize"
+        mkdir -p "$BIN"
+
+        ASSET_URL="$(curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" \
+          "https://api.github.com/repos/$REPO/releases/latest" \
+          | jq -r --arg suffix "_linux_${GOARCH}" \
+              '.assets[].browser_download_url | select(endswith($suffix))' \
+          | head -n1 || true)"
+
+        [[ -n "$ASSET_URL" ]] || { echo "::error::no linux/$GOARCH binary found in the latest release of $REPO"; exit 1; }
+
+        curl -fSL "$ASSET_URL" -o "$BIN/oci-sanitize"
+        chmod +x "$BIN/oci-sanitize"
+        echo "oci-sanitize installed at $BIN/oci-sanitize" >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Sanitize and publish image
+      shell: bash
+      env:
+        INPUT_IMAGE_TAG: ${{ inputs.imageTag }}
+        INPUT_PUBLISH_IMAGE_TAG: ${{ inputs.publishImageTag }}
+        INPUT_REGISTRY_USERNAME: ${{ inputs.registryUsername }}
+        INPUT_REGISTRY_PASSWORD: ${{ inputs.registryPassword }}
+        INPUT_GITHUB_ACTOR: ${{ github.actor }}
+        INPUT_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: "$RUNNER_TEMP/oci-sanitize/oci-sanitize"

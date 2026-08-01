@@ -1,0 +1,48 @@
+# Releases the oci-sanitize binary as a GitHub Release asset so the composite
+# action can download a prebuilt binary instead of compiling on every run.
+version: 2
+
+project_name: oci-sanitize
+
+builds:
+  - id: oci-sanitize
+    main: ./cmd/oci-sanitize
+    binary: oci-sanitize
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+      - arm
+      - 386
+    goarm:
+      - 7
+    ignore:
+      - goos: darwin
+        goarch: arm
+      - goos: darwin
+        goarch: 386
+      - goos: windows
+        goarch: arm
+
+archives:
+  - formats:
+      - binary
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
