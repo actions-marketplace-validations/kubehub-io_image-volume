@@ -38,7 +38,12 @@ func run() error {
 	ctx := context.Background()
 
 	imageTag := os.Getenv("INPUT_IMAGE_TAG")
-	publishTag := os.Getenv("INPUT_PUBLISH_IMAGE_TAG")
+	targetTag := os.Getenv("INPUT_TARGET_IMAGE_TAG")
+	publishTo := os.Getenv("INPUT_PUBLISH_TO")
+	if publishTo == "" {
+		publishTo = "RemotePush"
+	}
+	toDocker := strings.EqualFold(publishTo, "DockerDaemon")
 	username := os.Getenv("INPUT_REGISTRY_USERNAME")
 	password := os.Getenv("INPUT_REGISTRY_PASSWORD")
 	actor := os.Getenv("INPUT_GITHUB_ACTOR")
@@ -47,29 +52,23 @@ func run() error {
 	if imageTag == "" {
 		return errors.New("INPUT_IMAGE_TAG is required")
 	}
-	if publishTag == "" {
-		return errors.New("INPUT_PUBLISH_IMAGE_TAG is required")
-	}
-	if !strings.HasPrefix(publishTag, "ghcr.io/") {
-		return fmt.Errorf("publishImageTag %q must be under ghcr.io", publishTag)
-	}
 	if username == "" {
 		username = actor
 	}
 	if password == "" {
 		password = token
 	}
-	if password == "" {
-		fmt.Fprintln(os.Stderr, "image-volume-converter: warning: no registry credentials provided; publishing to ghcr.io will fail unless the repository is public")
+	if !toDocker && password == "" {
+		fmt.Fprintln(os.Stderr, "image-volume-converter: warning: no registry credentials provided; pushing to a remote registry may fail unless the repository is public")
 	}
 
 	srcRef, err := name.ParseReference(imageTag)
 	if err != nil {
 		return fmt.Errorf("parsing imageTag %q: %w", imageTag, err)
 	}
-	dstRef, err := name.ParseReference(publishTag)
+	dstRef, err := resolveDestination(imageTag, targetTag, publishTo)
 	if err != nil {
-		return fmt.Errorf("parsing publishImageTag %q: %w", publishTag, err)
+		return err
 	}
 
 	auth := authn.Anonymous
@@ -166,7 +165,21 @@ func run() error {
 	fmt.Printf("image-volume-converter: sanitized layout written to %s (config %s, architecture=%q os=%q)\n",
 		ociNewDir, newConfigName, outCfg.Architecture, outCfg.OS)
 
-	// 4) Publish the packed layout to the target registry (ghcr.io).
+	// 4) Output the packed layout: load it into the local docker daemon, or
+	//    push it to the target remote registry.
+	if toDocker {
+		dstTag, ok := dstRef.(name.Tag)
+		if !ok {
+			return fmt.Errorf("internal error: docker destination is not a tag")
+		}
+		fmt.Printf("image-volume-converter: loading %s into local docker daemon as %s\n", srcRef, dstTag)
+		if _, err := daemon.Write(dstTag, outImg); err != nil {
+			return fmt.Errorf("loading image into docker daemon: %w", err)
+		}
+		fmt.Printf("image-volume-converter: loaded %s into local docker daemon\n", dstTag.Name())
+		return nil
+	}
+
 	fmt.Printf("image-volume-converter: publishing %s -> %s\n", srcRef, dstRef)
 	if err := remote.Write(dstRef, outImg,
 		remote.WithAuth(auth),
@@ -176,6 +189,66 @@ func run() error {
 	}
 	fmt.Printf("image-volume-converter: published %s\n", dstRef.Name())
 	return nil
+}
+
+// resolveDestination validates the publishTo mode and destination inputs, and
+// returns the parsed reference.
+//
+// With publishTo: DockerDaemon the destination is the tag the image is loaded
+// under in the local docker daemon, and targetImageTag defaults to imageTag.
+//
+// With publishTo: RemotePush the destination is a remote registry reference.
+// When targetImageTag is empty it is defaulted: to
+// ghcr.io/<GITHUB_REPOSITORY>:sanitized on GitHub-hosted runners (detected via
+// the GITHUB_REPOSITORY environment variable), or to
+// docker.io/<source repository path>:sanitized on-prem.
+func resolveDestination(imageTag, targetTag, publishTo string) (name.Reference, error) {
+	switch strings.ToLower(publishTo) {
+	case "dockerdaemon":
+		if targetTag == "" {
+			targetTag = imageTag
+		}
+		tag, err := name.NewTag(targetTag)
+		if err != nil {
+			return nil, fmt.Errorf("parsing targetImageTag %q as a tag: %w", targetTag, err)
+		}
+		return tag, nil
+	case "", "remotepush":
+		if targetTag == "" {
+			targetTag = defaultRemoteTarget(imageTag)
+		}
+		ref, err := name.ParseReference(targetTag)
+		if err != nil {
+			return nil, fmt.Errorf("parsing targetImageTag %q: %w", targetTag, err)
+		}
+		return ref, nil
+	default:
+		return nil, fmt.Errorf("invalid publishTo %q (supported: DockerDaemon, RemotePush)", publishTo)
+	}
+}
+
+// defaultRemoteTarget returns a remote destination for a missing targetImageTag.
+// On GitHub-hosted runners it targets ghcr.io/<owner>/<repo>:sanitized; on-prem
+// (no GitHub environment) it targets docker.io/<source repository>:sanitized.
+func defaultRemoteTarget(imageTag string) string {
+	if repo := githubRepository(); repo != "" {
+		return "ghcr.io/" + repo + ":sanitized"
+	}
+	if ref, err := name.ParseReference(imageTag); err == nil {
+		if path := ref.Context().RepositoryStr(); path != "" {
+			return "docker.io/" + path + ":sanitized"
+		}
+	}
+	return "docker.io/" + imageTag + ":sanitized"
+}
+
+// githubRepository returns the GitHub repository (owner/name) when running on a
+// GitHub-hosted runner, otherwise the empty string.
+func githubRepository() string {
+	if repo := os.Getenv("INPUT_GITHUB_REPOSITORY"); repo != "" {
+		return repo
+	}
+	return os.Getenv("GITHUB_REPOSITORY")
 }
 
 // loadImage returns the image from the local docker daemon when available,

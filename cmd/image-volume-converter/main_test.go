@@ -210,6 +210,134 @@ func TestPublishToRegistry(t *testing.T) {
 	}
 }
 
+func TestResolveDestination(t *testing.T) {
+	cases := []struct {
+		name      string
+		imageTag  string
+		targetTag string
+		publishTo string
+		onPrem    bool
+		wantRef   string
+		wantErr   string
+	}{
+		{
+			name:      "remote push default mode",
+			imageTag:  "ghcr.io/kubehub-io/docs:main",
+			targetTag: "ghcr.io/kubehub-io/docs:sanitized",
+			publishTo: "",
+			wantRef:   "ghcr.io/kubehub-io/docs:sanitized",
+		},
+		{
+			name:      "remote push explicit",
+			imageTag:  "ghcr.io/kubehub-io/docs:main",
+			targetTag: "ghcr.io/kubehub-io/docs:sanitized",
+			publishTo: "RemotePush",
+			wantRef:   "ghcr.io/kubehub-io/docs:sanitized",
+		},
+		{
+			name:      "remote push defaulted to ghcr.io on github runner",
+			imageTag:  "ghcr.io/kubehub-io/docs:main",
+			publishTo: "RemotePush",
+			wantRef:   "ghcr.io/kubehub-io/docs:sanitized",
+		},
+		{
+			name:      "remote push defaulted to docker.io on-prem",
+			imageTag:  "docker.io/kubehub-io/docs:main",
+			publishTo: "RemotePush",
+			onPrem:    true,
+			wantRef:   "index.docker.io/kubehub-io/docs:sanitized",
+		},
+		{
+			name:      "remote push docker.io explicit",
+			imageTag:  "docker.io/kubehub-io/docs:main",
+			targetTag: "docker.io/kubehub-io/docs:sanitized",
+			publishTo: "RemotePush",
+			wantRef:   "index.docker.io/kubehub-io/docs:sanitized",
+		},
+		{
+			name:      "invalid publishTo",
+			imageTag:  "ghcr.io/kubehub-io/docs:main",
+			publishTo: "Registry",
+			wantErr:   `invalid publishTo "Registry"`,
+		},
+		{
+			name:      "docker defaults targetTag to imageTag",
+			imageTag:  "ghcr.io/kubehub-io/docs:main",
+			publishTo: "DockerDaemon",
+			wantRef:   "ghcr.io/kubehub-io/docs:main",
+		},
+		{
+			name:      "docker with explicit tag",
+			imageTag:  "ghcr.io/kubehub-io/docs:main",
+			targetTag: "ghcr.io/kubehub-io/docs:sanitized",
+			publishTo: "DockerDaemon",
+			wantRef:   "ghcr.io/kubehub-io/docs:sanitized",
+		},
+		{
+			name:      "docker destination must be a tag",
+			imageTag:  "ghcr.io/kubehub-io/docs:main",
+			targetTag: "ghcr.io/kubehub-io/docs@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			publishTo: "DockerDaemon",
+			wantErr:   "can only contain the characters",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.onPrem {
+				t.Setenv("INPUT_GITHUB_REPOSITORY", "")
+				t.Setenv("GITHUB_REPOSITORY", "")
+			} else {
+				t.Setenv("INPUT_GITHUB_REPOSITORY", "kubehub-io/docs")
+			}
+			ref, err := resolveDestination(tc.imageTag, tc.targetTag, tc.publishTo)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("resolveDestination() error = %v, want containing %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("resolveDestination() unexpected error: %v", err)
+			}
+			if got := ref.Name(); got != tc.wantRef {
+				t.Fatalf("resolveDestination() = %q, want %q", got, tc.wantRef)
+			}
+		})
+	}
+}
+
+func TestDefaultRemoteTarget(t *testing.T) {
+	t.Run("github runner uses ghcr.io", func(t *testing.T) {
+		t.Setenv("INPUT_GITHUB_REPOSITORY", "kubehub-io/image-volume")
+		t.Setenv("GITHUB_REPOSITORY", "")
+		if got := defaultRemoteTarget("ghcr.io/kubehub-io/docs:main"); got != "ghcr.io/kubehub-io/image-volume:sanitized" {
+			t.Fatalf("defaultRemoteTarget() = %q, want ghcr.io/kubehub-io/image-volume:sanitized", got)
+		}
+	})
+	t.Run("github runner falls back to GITHUB_REPOSITORY env", func(t *testing.T) {
+		t.Setenv("INPUT_GITHUB_REPOSITORY", "")
+		t.Setenv("GITHUB_REPOSITORY", "kubehub-io/image-volume")
+		if got := defaultRemoteTarget("ghcr.io/kubehub-io/docs:main"); got != "ghcr.io/kubehub-io/image-volume:sanitized" {
+			t.Fatalf("defaultRemoteTarget() = %q, want ghcr.io/kubehub-io/image-volume:sanitized", got)
+		}
+	})
+	t.Run("on-prem uses docker.io derived from source", func(t *testing.T) {
+		t.Setenv("INPUT_GITHUB_REPOSITORY", "")
+		t.Setenv("GITHUB_REPOSITORY", "")
+		if got := defaultRemoteTarget("docker.io/kubehub-io/docs:main"); got != "docker.io/kubehub-io/docs:sanitized" {
+			t.Fatalf("defaultRemoteTarget() = %q, want docker.io/kubehub-io/docs:sanitized", got)
+		}
+	})
+	t.Run("on-prem bare source still targets docker.io", func(t *testing.T) {
+		t.Setenv("INPUT_GITHUB_REPOSITORY", "")
+		t.Setenv("GITHUB_REPOSITORY", "")
+		if got := defaultRemoteTarget("kubehub-io/docs:main"); got != "docker.io/kubehub-io/docs:sanitized" {
+			t.Fatalf("defaultRemoteTarget() = %q, want docker.io/kubehub-io/docs:sanitized", got)
+		}
+	})
+}
+
 func staticLayer(t *testing.T) v1.Layer {
 	t.Helper()
 	return static.NewLayer([]byte("payload"), types.OCILayer)

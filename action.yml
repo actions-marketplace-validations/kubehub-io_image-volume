@@ -2,8 +2,8 @@ name: 'OCI Image Arch/OS Sanitizer'
 description: >-
   Loads an image (preferring the local docker daemon, otherwise pulling it for
   the platform of the current runner), exports it as an OCI archive, rewrites
-  its config so architecture/os are "unknown", and publishes the result to a
-  ghcr.io repository.
+  its config so architecture/os are "unknown", and either loads the result back
+  into the local docker daemon or publishes it to a ghcr.io repository.
 branding:
   icon: 'package'
   color: 'blue'
@@ -16,11 +16,23 @@ inputs:
       from its registry. Multi-arch images are resolved to the platform of the
       current runner.
     required: true
-  publishImageTag:
+  targetImageTag:
     description: >-
-      Destination image reference on ghcr.io, e.g. ghcr.io/kubehub-io/docs:sanitized.
-      Only ghcr.io is supported for now.
-    required: true
+      Destination image reference, e.g. ghcr.io/kubehub-io/docs:sanitized.
+      With publishTo: DockerDaemon this is the tag the converted image is
+      loaded under in the local docker daemon (defaults to imageTag). With
+      publishTo: RemotePush this is the remote target; when omitted it is
+      defaulted to ghcr.io/${{ github.repository }}:sanitized on GitHub-hosted
+      runners, or to docker.io/&lt;source repository&gt;:sanitized on-prem.
+    required: false
+    default: ''
+  publishTo:
+    description: >-
+      Where to put the converted image. DockerDaemon loads it into the local
+      docker daemon; RemotePush pushes it to a remote registry. Defaults to
+      RemotePush.
+    required: false
+    default: 'RemotePush'
   registryUsername:
     description: 'Username used to authenticate against ghcr.io. Defaults to github.actor.'
     required: false
@@ -71,7 +83,9 @@ runs:
       shell: bash
       env:
         INPUT_IMAGE_TAG: ${{ inputs.imageTag }}
-        INPUT_PUBLISH_IMAGE_TAG: ${{ inputs.publishImageTag }}
+        INPUT_TARGET_IMAGE_TAG: ${{ inputs.targetImageTag }}
+        INPUT_PUBLISH_TO: ${{ inputs.publishTo }}
+        INPUT_GITHUB_REPOSITORY: ${{ github.repository }}
         INPUT_REGISTRY_USERNAME: ${{ inputs.registryUsername }}
         INPUT_REGISTRY_PASSWORD: ${{ inputs.registryPassword }}
         INPUT_GITHUB_ACTOR: ${{ github.actor }}

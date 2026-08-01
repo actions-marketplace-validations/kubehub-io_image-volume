@@ -1,4 +1,4 @@
-name: Build and publish Docker image (web)
+name: Example - convert image for Kubernetes image volumes
 
 on:
   push:
@@ -13,10 +13,9 @@ on:
 
 permissions:
   contents: read
-  packages: write
 
 jobs:
-  build-and-push:
+  example:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -37,14 +36,7 @@ jobs:
         with:
           install: true
 
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v2
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build and push Docker image
+      - name: Build Docker image
         id: build
         uses: docker/build-push-action@v4
         with:
@@ -61,9 +53,19 @@ jobs:
           provenance: false
           sbom: false
 
-      - name: Sanitize arch/os and publish
-        if: github.event_name != 'pull_request'
+      - name: Inspect original image platform
+        run: |
+          docker inspect ghcr.io/${{ github.repository }}-test:${{ env.IMAGE_TAG }} \
+            --format 'original: architecture={{.Architecture}} os={{.Os}}'
+
+      - name: Sanitize arch/os and load into local docker daemon
         uses: ./
         with:
           imageTag: ghcr.io/${{ github.repository }}-test:${{ env.IMAGE_TAG }}
-          publishImageTag: ghcr.io/${{ github.repository }}-test:${{ env.IMAGE_TAG }}
+          targetImageTag: ghcr.io/${{ github.repository }}-test:sanitized
+          publishTo: DockerDaemon
+
+      - name: Inspect converted image platform
+        run: |
+          docker inspect ghcr.io/${{ github.repository }}-test:sanitized \
+            --format 'converted: architecture={{.Architecture}} os={{.Os}}'
