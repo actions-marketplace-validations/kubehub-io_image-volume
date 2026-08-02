@@ -393,6 +393,11 @@ func unpack(archivePath, destDir string) error {
 		return err
 	}
 
+	destAbs, err := filepath.Abs(destDir)
+	if err != nil {
+		return err
+	}
+
 	f, err := os.Open(archivePath)
 	if err != nil {
 		return err
@@ -409,10 +414,23 @@ func unpack(archivePath, destDir string) error {
 			return err
 		}
 		name := filepath.Clean(hdr.Name)
-		if name == "." || filepath.IsAbs(name) || strings.HasPrefix(name, "..") {
+		if name == "." || name == "" || filepath.IsAbs(name) {
 			continue
 		}
+
 		target := filepath.Join(destDir, name)
+		targetAbs, err := filepath.Abs(target)
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(destAbs, targetAbs)
+		if err != nil {
+			return err
+		}
+		if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+			continue
+		}
+
 		switch hdr.Typeflag {
 		case tar.TypeDir:
 			if err := os.MkdirAll(target, 0o755); err != nil {
@@ -434,6 +452,19 @@ func unpack(archivePath, destDir string) error {
 		case tar.TypeSymlink:
 			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 				return err
+			}
+			linkTarget := filepath.Clean(hdr.Linkname)
+			linkAbs := filepath.Join(filepath.Dir(targetAbs), linkTarget)
+			linkAbs, err = filepath.Abs(linkAbs)
+			if err != nil {
+				return err
+			}
+			linkRel, err := filepath.Rel(destAbs, linkAbs)
+			if err != nil {
+				return err
+			}
+			if linkRel == ".." || strings.HasPrefix(linkRel, ".."+string(os.PathSeparator)) {
+				continue
 			}
 			if err := os.Symlink(hdr.Linkname, target); err != nil {
 				return err
