@@ -1,6 +1,7 @@
 package main
 
 import (
+	"archive/tar"
 	"encoding/json"
 	"fmt"
 	"net/http/httptest"
@@ -207,6 +208,59 @@ func TestPublishToRegistry(t *testing.T) {
 	}
 	if gotCfg.Architecture != "unknown" || gotCfg.OS != "unknown" {
 		t.Fatalf("read-back os/arch not set to unknown: arch=%q os=%q", gotCfg.Architecture, gotCfg.OS)
+	}
+}
+
+func TestUnpackRejectsZipSlipAndSymlinks(t *testing.T) {
+	tempDir := t.TempDir()
+	archivePath := filepath.Join(tempDir, "malicious.tar")
+	archiveFile, err := os.Create(archivePath)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	tw := tar.NewWriter(archiveFile)
+
+	for _, hdr := range []*tar.Header{
+		{Name: "safe/ok.txt", Mode: 0o644, Typeflag: tar.TypeReg, Size: int64(len("ok"))},
+		{Name: "../../outside.txt", Mode: 0o644, Typeflag: tar.TypeReg, Size: int64(len("bad"))},
+		{Name: "link", Mode: 0o777, Typeflag: tar.TypeSymlink, Linkname: "../../etc/passwd"},
+	} {
+		if err := tw.WriteHeader(hdr); err != nil {
+			t.Fatalf("WriteHeader: %v", err)
+		}
+		switch hdr.Typeflag {
+		case tar.TypeReg:
+			if hdr.Name == "safe/ok.txt" {
+				if _, err := tw.Write([]byte("ok")); err != nil {
+					t.Fatalf("Write safe file: %v", err)
+				}
+			} else {
+				if _, err := tw.Write([]byte("bad")); err != nil {
+					t.Fatalf("Write bad file: %v", err)
+				}
+			}
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("Close tar writer: %v", err)
+	}
+	if err := archiveFile.Close(); err != nil {
+		t.Fatalf("Close archive file: %v", err)
+	}
+
+	destDir := filepath.Join(tempDir, "dest")
+	if err := unpack(archivePath, destDir); err != nil {
+		t.Fatalf("unpack: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(destDir, "safe", "ok.txt")); err != nil {
+		t.Fatalf("expected safe file to be preserved: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(destDir, "..", "outside.txt")); !os.IsNotExist(err) {
+		t.Fatalf("malicious archive path should not escape destination: stat err=%v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(destDir, "link")); !os.IsNotExist(err) {
+		t.Fatalf("symlink entry should not be extracted: stat err=%v", err)
 	}
 }
 

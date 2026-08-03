@@ -384,7 +384,49 @@ func packDir(srcDir, archivePath string) error {
 	})
 }
 
-// unpack extracts a tar archive into destDir, guarding against path traversal.
+// unpack extracts a tar archive into destDir, guarding against path traversal
+// and symlink-based escapes.
+func resolvedWithin(baseAbs, candidate string) (string, bool, error) {
+	candidateAbs, err := filepath.Abs(candidate)
+	if err != nil {
+		return "", false, err
+	}
+	parent := filepath.Dir(candidateAbs)
+	parentResolved, err := filepath.EvalSymlinks(parent)
+	if err != nil {
+		parentResolved = parent
+	}
+	resolved := filepath.Join(parentResolved, filepath.Base(candidateAbs))
+	rel, err := filepath.Rel(baseAbs, resolved)
+	if err != nil {
+		return "", false, err
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return resolved, false, nil
+	}
+	return resolved, true, nil
+}
+
+func safeArchiveTarget(destAbs, name string) (string, bool) {
+	clean := filepath.Clean(name)
+	if clean == "." || clean == "" || filepath.IsAbs(clean) {
+		return "", false
+	}
+	if clean == ".." ||
+		strings.HasPrefix(clean, ".."+string(os.PathSeparator)) ||
+		strings.Contains(clean, string(os.PathSeparator)+".."+string(os.PathSeparator)) ||
+		strings.HasSuffix(clean, string(os.PathSeparator)+"..") {
+		return "", false
+	}
+
+	target := filepath.Join(destAbs, clean)
+	safeTarget, ok, err := resolvedWithin(destAbs, target)
+	if err != nil || !ok {
+		return "", false
+	}
+	return safeTarget, true
+}
+
 func unpack(archivePath, destDir string) error {
 	if err := os.RemoveAll(destDir); err != nil {
 		return err
@@ -413,40 +455,36 @@ func unpack(archivePath, destDir string) error {
 		if err != nil {
 			return err
 		}
-		name := filepath.Clean(hdr.Name)
-		if name == "." || name == "" || filepath.IsAbs(name) {
-			continue
-		}
-		if name == ".." ||
-			strings.HasPrefix(name, ".."+string(os.PathSeparator)) ||
-			strings.Contains(name, string(os.PathSeparator)+".."+string(os.PathSeparator)) ||
-			strings.HasSuffix(name, string(os.PathSeparator)+"..") {
+
+		if hdr.Name == "" {
 			continue
 		}
 
-		target := filepath.Join(destDir, name)
-		targetAbs, err := filepath.Abs(target)
-		if err != nil {
-			return err
+		switch hdr.Typeflag {
+		case tar.TypeSymlink, tar.TypeLink:
+			continue
+		case tar.TypeDir:
+			break
+		case tar.TypeReg, tar.TypeRegA:
+		default:
+			continue
 		}
-		rel, err := filepath.Rel(destAbs, targetAbs)
-		if err != nil {
-			return err
-		}
-		if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+
+		safeTarget, ok := safeArchiveTarget(destAbs, hdr.Name)
+		if !ok {
 			continue
 		}
 
 		switch hdr.Typeflag {
 		case tar.TypeDir:
-			if err := os.MkdirAll(target, 0o755); err != nil {
+			if err := os.MkdirAll(safeTarget, 0o755); err != nil {
 				return err
 			}
-		case tar.TypeReg:
-			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		case tar.TypeReg, tar.TypeRegA:
+			if err := os.MkdirAll(filepath.Dir(safeTarget), 0o755); err != nil {
 				return err
 			}
-			out, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(hdr.Mode)&0o777)
+			out, err := os.OpenFile(safeTarget, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(hdr.Mode)&0o777)
 			if err != nil {
 				return err
 			}
@@ -454,26 +492,6 @@ func unpack(archivePath, destDir string) error {
 			out.Close()
 			if copyErr != nil {
 				return copyErr
-			}
-		case tar.TypeSymlink:
-			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-				return err
-			}
-			linkTarget := filepath.Clean(hdr.Linkname)
-			linkAbs := filepath.Join(filepath.Dir(targetAbs), linkTarget)
-			linkAbs, err = filepath.Abs(linkAbs)
-			if err != nil {
-				return err
-			}
-			linkRel, err := filepath.Rel(destAbs, linkAbs)
-			if err != nil {
-				return err
-			}
-			if linkRel == ".." || strings.HasPrefix(linkRel, ".."+string(os.PathSeparator)) {
-				continue
-			}
-			if err := os.Symlink(hdr.Linkname, target); err != nil {
-				return err
 			}
 		}
 	}
