@@ -384,18 +384,18 @@ func packDir(srcDir, archivePath string) error {
 	})
 }
 
-// unpack extracts a tar archive into destDir, guarding against path traversal.
+// unpack extracts a tar archive into destDir, guarding against path traversal
+// and symlink-based escapes.
 func resolvedWithin(baseAbs, candidate string) (string, bool, error) {
 	candidateAbs, err := filepath.Abs(candidate)
 	if err != nil {
 		return "", false, err
 	}
-
-	parentResolved, err := filepath.EvalSymlinks(filepath.Dir(candidateAbs))
+	parent := filepath.Dir(candidateAbs)
+	parentResolved, err := filepath.EvalSymlinks(parent)
 	if err != nil {
-		return "", false, err
+		parentResolved = parent
 	}
-
 	resolved := filepath.Join(parentResolved, filepath.Base(candidateAbs))
 	rel, err := filepath.Rel(baseAbs, resolved)
 	if err != nil {
@@ -435,6 +435,7 @@ func unpack(archivePath, destDir string) error {
 		if err != nil {
 			return err
 		}
+
 		name := filepath.Clean(hdr.Name)
 		if name == "." || name == "" || filepath.IsAbs(name) {
 			continue
@@ -443,6 +444,16 @@ func unpack(archivePath, destDir string) error {
 			strings.HasPrefix(name, ".."+string(os.PathSeparator)) ||
 			strings.Contains(name, string(os.PathSeparator)+".."+string(os.PathSeparator)) ||
 			strings.HasSuffix(name, string(os.PathSeparator)+"..") {
+			continue
+		}
+
+		switch hdr.Typeflag {
+		case tar.TypeSymlink, tar.TypeLink:
+			continue
+		case tar.TypeDir:
+			break
+		case tar.TypeReg, tar.TypeRegA:
+		default:
 			continue
 		}
 
@@ -460,7 +471,7 @@ func unpack(archivePath, destDir string) error {
 			if err := os.MkdirAll(safeTarget, 0o755); err != nil {
 				return err
 			}
-		case tar.TypeReg:
+		case tar.TypeReg, tar.TypeRegA:
 			if err := os.MkdirAll(filepath.Dir(safeTarget), 0o755); err != nil {
 				return err
 			}
@@ -472,19 +483,6 @@ func unpack(archivePath, destDir string) error {
 			out.Close()
 			if copyErr != nil {
 				return copyErr
-			}
-		case tar.TypeSymlink:
-			if err := os.MkdirAll(filepath.Dir(safeTarget), 0o755); err != nil {
-				return err
-			}
-			linkCandidate := filepath.Join(filepath.Dir(safeTarget), hdr.Linkname)
-			if _, ok, err := resolvedWithin(destAbs, linkCandidate); err != nil {
-				return err
-			} else if !ok {
-				continue
-			}
-			if err := os.Symlink(hdr.Linkname, safeTarget); err != nil {
-				return err
 			}
 		}
 	}

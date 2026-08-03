@@ -90,7 +90,7 @@ jobs:
 
       - name: Remove os/arch from image and export OCI archive using released action
         if: github.event_name != 'pull_request' && github.event_name != 'release'
-        uses: kubehub-io/image-volume@v1
+        uses: ./
         with:
           imageTag: ghcr.io/${{ github.repository }}-test:${{ env.IMAGE_TAG }}
           publishTo: OCIArchive:${{ runner.temp }}/no-arch.tar
