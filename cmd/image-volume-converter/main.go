@@ -407,6 +407,26 @@ func resolvedWithin(baseAbs, candidate string) (string, bool, error) {
 	return resolved, true, nil
 }
 
+func safeArchiveTarget(destAbs, name string) (string, bool) {
+	clean := filepath.Clean(name)
+	if clean == "." || clean == "" || filepath.IsAbs(clean) {
+		return "", false
+	}
+	if clean == ".." ||
+		strings.HasPrefix(clean, ".."+string(os.PathSeparator)) ||
+		strings.Contains(clean, string(os.PathSeparator)+".."+string(os.PathSeparator)) ||
+		strings.HasSuffix(clean, string(os.PathSeparator)+"..") {
+		return "", false
+	}
+
+	target := filepath.Join(destAbs, clean)
+	safeTarget, ok, err := resolvedWithin(destAbs, target)
+	if err != nil || !ok {
+		return "", false
+	}
+	return safeTarget, true
+}
+
 func unpack(archivePath, destDir string) error {
 	if err := os.RemoveAll(destDir); err != nil {
 		return err
@@ -436,14 +456,7 @@ func unpack(archivePath, destDir string) error {
 			return err
 		}
 
-		name := filepath.Clean(hdr.Name)
-		if name == "." || name == "" || filepath.IsAbs(name) {
-			continue
-		}
-		if name == ".." ||
-			strings.HasPrefix(name, ".."+string(os.PathSeparator)) ||
-			strings.Contains(name, string(os.PathSeparator)+".."+string(os.PathSeparator)) ||
-			strings.HasSuffix(name, string(os.PathSeparator)+"..") {
+		if hdr.Name == "" {
 			continue
 		}
 
@@ -457,11 +470,7 @@ func unpack(archivePath, destDir string) error {
 			continue
 		}
 
-		target := filepath.Join(destDir, name)
-		safeTarget, ok, err := resolvedWithin(destAbs, target)
-		if err != nil {
-			return err
-		}
+		safeTarget, ok := safeArchiveTarget(destAbs, hdr.Name)
 		if !ok {
 			continue
 		}
