@@ -417,6 +417,12 @@ func unpack(archivePath, destDir string) error {
 		if name == "." || name == "" || filepath.IsAbs(name) {
 			continue
 		}
+		if name == ".." ||
+			strings.HasPrefix(name, ".."+string(os.PathSeparator)) ||
+			strings.Contains(name, string(os.PathSeparator)+".."+string(os.PathSeparator)) ||
+			strings.HasSuffix(name, string(os.PathSeparator)+"..") {
+			continue
+		}
 
 		target := filepath.Join(destDir, name)
 		targetAbs, err := filepath.Abs(target)
