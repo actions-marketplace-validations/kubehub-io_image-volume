@@ -34,6 +34,16 @@ jobs:
           echo "REV=$REV" >> "$GITHUB_ENV"
           echo "IMAGE_TAG=main-$DATE-$REV" >> "$GITHUB_ENV"
 
+      - name: Set up Go for PR validation
+        if: github.event_name == 'pull_request'
+        uses: actions/setup-go@v7
+        with:
+          go-version: 'stable'
+
+      - name: Build image-volume-converter from source
+        if: github.event_name == 'pull_request'
+        run: go build -o "$RUNNER_TEMP/image-volume-converter" ./cmd/image-volume-converter
+
       - name: Set up Docker Buildx (multi-platform builder)
         id: buildx
         uses: docker/setup-buildx-action@v4
@@ -66,12 +76,21 @@ jobs:
       # image store refuses to load (moby's image.CheckOS). containerd and the
       # Kubernetes kubelet accept it though.
       #
-      # On pull requests and main-branch pushes: export an OCI archive and
-      # verify the conversion with skopeo. On releases: push the no-arch
-      # image to ghcr.io so it can be referenced by an image volume.
-      - name: Remove os/arch from image and export OCI archive
-        if: github.event_name != 'release'
-        uses: ./
+      # Pull requests validate the local source tree by compiling the converter
+      # and invoking it directly; main/master pushes continue to exercise the
+      # released action; releases publish the no-arch image to ghcr.io.
+      - name: Remove os/arch from image and export OCI archive from source build
+        if: github.event_name == 'pull_request'
+        env:
+          INPUT_IMAGE_TAG: ghcr.io/${{ github.repository }}-test:${{ env.IMAGE_TAG }}
+          INPUT_PUBLISH_TO: OCIArchive:${{ runner.temp }}/no-arch.tar
+          INPUT_GITHUB_ACTOR: ${{ github.actor }}
+          INPUT_GITHUB_TOKEN: ${{ github.token }}
+        run: "$RUNNER_TEMP/image-volume-converter"
+
+      - name: Remove os/arch from image and export OCI archive using released action
+        if: github.event_name != 'pull_request' && github.event_name != 'release'
+        uses: kubehub-io/image-volume@v1
         with:
           imageTag: ghcr.io/${{ github.repository }}-test:${{ env.IMAGE_TAG }}
           publishTo: OCIArchive:${{ runner.temp }}/no-arch.tar
