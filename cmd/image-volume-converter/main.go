@@ -447,33 +447,24 @@ func unpack(archivePath, destDir string) error {
 		}
 
 		target := filepath.Join(destDir, name)
-		targetAbs, err := filepath.Abs(target)
+		safeTarget, ok, err := resolvedWithin(destAbs, target)
 		if err != nil {
 			return err
 		}
-		rel, err := filepath.Rel(destAbs, targetAbs)
-		if err != nil {
-			return err
-		}
-		if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		if !ok {
 			continue
 		}
 
 		switch hdr.Typeflag {
 		case tar.TypeDir:
-			if err := os.MkdirAll(target, 0o755); err != nil {
+			if err := os.MkdirAll(safeTarget, 0o755); err != nil {
 				return err
 			}
 		case tar.TypeReg:
-			if _, ok, err := resolvedWithin(destAbs, target); err != nil {
-				return err
-			} else if !ok {
-				continue
-			}
-			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			if err := os.MkdirAll(filepath.Dir(safeTarget), 0o755); err != nil {
 				return err
 			}
-			out, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(hdr.Mode)&0o777)
+			out, err := os.OpenFile(safeTarget, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(hdr.Mode)&0o777)
 			if err != nil {
 				return err
 			}
@@ -483,21 +474,16 @@ func unpack(archivePath, destDir string) error {
 				return copyErr
 			}
 		case tar.TypeSymlink:
-			if _, ok, err := resolvedWithin(destAbs, target); err != nil {
-				return err
-			} else if !ok {
-				continue
-			}
-			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			if err := os.MkdirAll(filepath.Dir(safeTarget), 0o755); err != nil {
 				return err
 			}
-			linkCandidate := filepath.Join(filepath.Dir(target), hdr.Linkname)
+			linkCandidate := filepath.Join(filepath.Dir(safeTarget), hdr.Linkname)
 			if _, ok, err := resolvedWithin(destAbs, linkCandidate); err != nil {
 				return err
 			} else if !ok {
 				continue
 			}
-			if err := os.Symlink(hdr.Linkname, target); err != nil {
+			if err := os.Symlink(hdr.Linkname, safeTarget); err != nil {
 				return err
 			}
 		}
